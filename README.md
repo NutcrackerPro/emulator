@@ -105,7 +105,7 @@ Windows can return its already unused sectors with administrator PowerShell `Opt
 
 ```sh
 python3 nutcracker.py --check
-python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py
+python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py test_host_service.py
 ```
 
 Automated checks cover the companion, console bridge, and local access controls using mocked UTM responses and a test display server. They do not establish Windows boot or game compatibility.
@@ -120,10 +120,10 @@ The internet connector uses userspace networking and leaves macOS VPN configurat
 
 Internet access requires Python 3.10 or later for the patched networking library. Install the gateway dependencies with `python3 setup_console.py --with-remote`. Install Tailscale from its [official macOS instructions](https://github.com/tailscale/tailscale/wiki/Tailscaled-on-macOS) or supported Homebrew package. The configured Mac keeps its verified CLI binaries in `.runtime/tailscale`. Sign in and enable Funnel yourself, then save the exact assigned address with `python3 nutcracker.py --set-remote-origin https://YOUR-DEVICE.YOUR-TAILNET.ts.net`. Update the public page's Windows link to that address.
 
-Double-click **Launch Nutcracker.command** to restart the saved connection and launcher. Keep this Mac connected to the internet with its lid open. The launcher prevents idle sleep while hosting; closing it restores normal sleep. Funnel is a beta service with bandwidth limits, so remote graphics and input speed depend on both internet connections. See [Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel) and [free Personal plan](https://tailscale.com/pricing).
+Double-click **Launch Nutcracker.command** to restart the saved connection and launcher. The configured Mac also runs the host as a private login service, independent of this chat. To prepare or enable that service after configuring your own Mac, use `python3 install_host_service.py --write-only` or `--install`. It installs only `com.nutcracker.emulator.host` for the current Mac user. Live hosting files and private settings are stored in `~/Library/Application Support/Nutcracker/host`; immutable dependencies are shared where supported to avoid duplicate storage. Windows remains in its original UTM location. Keep this Mac connected to the internet with its lid open. The launcher prevents idle sleep while hosting; closing it restores normal sleep. Funnel is a beta service with bandwidth limits, so remote graphics and input speed depend on both internet connections. See [Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel) and [free Personal plan](https://tailscale.com/pricing).
 
 ## Clearer display
 
 **Native pixels (sharp)** displays each Windows pixel without shrinking or enlarging it. If the desktop is larger than the viewer, use the arrow controls or scrollbars, or open fullscreen. **Fit display** shows the whole desktop in the available space and defaults on narrow screens. The viewer requests the highest image quality; these controls do not add GPU acceleration or change Windows resolution.
 
-Verify networking without operating a real VM: `python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py`.
+Verify networking without operating a real VM: `python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py test_host_service.py`.
