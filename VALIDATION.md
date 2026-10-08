@@ -20,20 +20,24 @@ Signed UTM resolves the relative socket inside its shared app-group directory:
 
 A connection to that actual socket returned a valid RFB greeting. The real VM's **UEFI screen and Windows 11 installer appeared in the local browser**. Browser keyboard input selected the installation disc; mouse input completed the language, keyboard, edition, and empty-disk choices. This verifies live Windows installer display and input transport. The console has no browser audio or added 3D acceleration.
 
-The owner supplied an ISO named `Windows11_Client_arm64_en-us_26300_9457.iso`. Its name alone is not verification of the Windows release, channel, or installed build. The actual Windows version must be recorded after installation.
+The owner supplied an ISO named `Windows11_Client_arm64_en-us_26300_9457.iso`. The installed Windows version was checked inside the guest rather than inferred from that filename.
 
 ## Actual Windows and games
 
-The owner explicitly approved acceptance of Microsoft's displayed installation licence terms on 8 October 2026. Setup selected Windows 11 Home, used the normal **I don't have a product key** option, and installed onto the new empty 80 GiB virtual disk. Installation reached 83% and restarted; completion and desktop access still need verification.
+The owner explicitly approved acceptance of Microsoft's displayed installation licence terms on 8 October 2026. Setup selected Windows 11 Home, used the normal **I don't have a product key** option, and installed onto the new empty 80 GiB virtual disk. The owner completed first-run account setup, and Windows reached its real desktop in the local browser console. Internet access, browser fullscreen, and keyboard/mouse input work. The display connection remained live through installation restarts.
+
+Guest diagnostics report **Microsoft Windows 11 Home, version 10.0.26300, build 26300**. The **Red Hat VirtIO GPU DOD controller** reports driver **22.7.38.43**. These observations do not establish a Windows release channel or usable 3D acceleration.
+
+The official Steam installer was downloaded to `C:\Windows\Temp\NutcrackerSteamSetup.exe`. Authenticode reported **Valid**, with publisher **Valve Corp**. The normal interactive wizard completed installation in `C:\Program Files (x86)\Steam`. Steam then downloaded its client update and opened to its real sign-in screen in the browser. No account credentials were entered. Installer signature and client startup do not establish game compatibility.
+
+The browser's **Run app** shortcut opened Windows Run, and keyboard input launched the installer. The additional controls wrap at smaller viewport sizes.
 
 These checks are **pending**, not passed:
 
-- Windows installation and first-run setup complete.
-- Windows boots to a real desktop.
-- Guest graphics and network drivers installed.
-- Steam opens and the owner signs in.
+- Owner Steam login.
 - Blue Archive launches without bypassing anticheat.
-- Sound, keyboard/mouse/controller, and a real gameplay session verified.
+- Guest audio, controller support, usable 3D acceleration, and a real gameplay session.
+- Windows licence availability and activation.
 
 The Windows PowerShell helper has been reviewed but has not been executed in Windows. No Windows VM, ISO, licence, or account credentials are supplied in this repository. Do not treat a dashboard screenshot, mocked unit test, UEFI display, installer download, or Steam installation as proof of gameplay.
 
