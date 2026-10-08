@@ -2,7 +2,7 @@
 
 A private dashboard and browser display for a real Windows virtual machine on an Apple Silicon Mac. **UTM** runs the VM on your Mac; a local companion connects its screen, keyboard, and mouse to the browser using **noVNC**. This project does not contain Windows, a Windows licence, or a replacement for UTM's virtualization engine.
 
-**Current status:** the real Windows 11 Home installer is working in the browser with keyboard and mouse input. Installation has started on the empty virtual disk and continued through a restart. A Windows desktop, Steam login, and Blue Archive gameplay still need verification. The dashboard reads actual UTM status. No purchases have been made; the launcher, browser console, and UTM download require no paid service. Windows licensing is separate.
+**Current status:** Windows 11 Home is installed and running in the private browser console. The real desktop, internet access, keyboard, mouse, fullscreen, and display continuity through restarts have been verified. Valve's official installer was signature-checked, Steam is installed, and its updated client has opened to the sign-in screen. Owner login and Blue Archive gameplay remain pending. No purchases have been made or Windows licence supplied. Windows licensing remains separate.
 
 ## Start the private launcher
 
@@ -50,9 +50,9 @@ Configure only one VM with that socket name. Keep the relative filename: signed 
 
 The companion checks this one fixed socket; the browser cannot select arbitrary files or servers. UTM's [launch source](https://github.com/utmapp/UTM/blob/v4.7.5/Services/UTMQemuVirtualMachine.swift) sets that working directory. No sandbox, signature, or macOS security setting needs to be disabled.
 
-Use the display without GL because UTM's [QEMU SPICE GL context](https://github.com/utmapp/qemu/blob/v10.0.2-utm/ui/spice-display.c) accepts only its own GL display listener, which excludes VNC. UTM generates `gl=off` for the nongl display. The browser console carries display, keyboard, and mouse; **it provides no browser audio or added 3D acceleration**. UTM's own window remains available. Disconnecting the console leaves the VM running.
+Use the display without GL because UTM's [QEMU SPICE GL context](https://github.com/utmapp/qemu/blob/v10.0.2-utm/ui/spice-display.c) accepts only its own GL display listener, which excludes VNC. UTM generates `gl=off` for the nongl display. The browser console carries display, keyboard, and mouse; **it provides no browser audio or added 3D acceleration**. The **Start menu** and **Run app** buttons send Windows shortcuts directly to the guest, avoiding Mac shortcut conflicts. UTM's own window remains available. Disconnecting the console leaves the VM running.
 
-The actual setup tested so far is an M4 MacBook Air with 24 GB RAM, UTM 4.7.5, and a VM allocated 8 GB RAM, 4 CPU cores, and 80 GiB of virtual storage. The owner supplied an Arm64 ISO named `Windows11_Client_arm64_en-us_26300_9457.iso`; the filename alone does not verify the installed Windows release. See [VALIDATION.md](VALIDATION.md) for the distinction between completed checks and pending installation/game tests.
+The actual setup tested is an M4 MacBook Air with 24 GB RAM, UTM 4.7.5, and a VM allocated 8 GB RAM, 4 CPU cores, and 80 GiB of virtual storage. Guest diagnostics report **Microsoft Windows 11 Home, version 10.0.26300, build 26300**. The display controller is **Red Hat VirtIO GPU DOD controller**, driver **22.7.38.43**. These observations do not establish a Windows release channel or usable 3D acceleration. See [VALIDATION.md](VALIDATION.md) for completed checks and pending game tests.
 
 ## Install Steam in Windows
 
