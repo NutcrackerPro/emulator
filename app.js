@@ -66,7 +66,7 @@
       const transitioning = ["starting", "pausing", "resuming", "stopping"].includes(vm.status);
       setMachineState(labels[vm.status] || "Unknown", running ? "running" : transitioning ? "transitioning" : "ready");
       ui.description.textContent = `${vm.name} · ${labels[vm.status] || "Unknown state"}`;
-      if (running) ui.hint.textContent = "Your VM is running in UTM. Open UTM to check Windows boot and launch Steam.";
+      if (running) ui.hint.textContent = "Your VM is running. Open Windows in your browser to use the desktop and launch Steam.";
       else if (vm.status === "paused") ui.hint.textContent = "Resume this VM in UTM to use Windows. A graceful shutdown requests that Windows close normally.";
       else if (vm.status === "stopped") ui.hint.textContent = "Start opens your VM in UTM. Steam runs inside Windows, after you install it.";
       else if (transitioning) ui.hint.textContent = "UTM is changing this VM’s state. Refresh status after a moment to check the result.";
