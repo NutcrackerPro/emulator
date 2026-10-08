@@ -53,9 +53,10 @@ class ConsoleUnavailable(Exception):
 
 
 class ConsoleBridge:
-    def __init__(self, page_port, token, port=DEFAULT_PORT, unix_socket=None):
+    def __init__(self, page_port, token, port=DEFAULT_PORT, unix_socket=None, auth=None):
         self.page_port = page_port
         self.token = token
+        self.auth = auth
         self.port = port
         self.unix_socket = Path(unix_socket) if unix_socket is not None else default_socket()
         self.error = None
@@ -65,6 +66,9 @@ class ConsoleBridge:
         self._ready = threading.Event()
         self.running = False
         self._connection_closed = ()
+        self._clients = {}
+        if auth is not None:
+            auth.add_revocation_listener(self.revoke_session)
         # Library exception logs can include request URLs. Suppress those logs
         # completely so query-string session tokens never reach a log file.
         self._logger = logging.Logger("nutcracker.private-console", level=logging.CRITICAL + 1)
@@ -134,6 +138,20 @@ class ConsoleBridge:
             self._thread.join(timeout=3)
         self.running = False
 
+    def revoke_session(self, session):
+        if self._loop is None or not self._loop.is_running():
+            return
+
+        async def close_clients():
+            clients = list(self._clients.get(session, ()))
+            if clients:
+                await asyncio.gather(*(client.close(code=1008, reason="Local sign-in ended.") for client in clients), return_exceptions=True)
+
+        try:
+            self._loop.call_soon_threadsafe(lambda: asyncio.create_task(close_clients()))
+        except RuntimeError:
+            pass  # A companion that is already closing has no live session.
+
     @staticmethod
     def _single_header(headers, name):
         values = headers.get_all(name)
@@ -165,6 +183,8 @@ class ConsoleBridge:
             values[0].encode("utf-8"), self.token.encode("ascii")
         ):
             return connection.respond(403, "Reload the Nutcracker page to renew this session.\n")
+        if self.auth is None or self.auth.session_from_cookie(self._single_header(request.headers, "Cookie")) is None:
+            return connection.respond(401, "Sign in to your local Nutcracker account.\n")
         try:
             self._check_socket()
         except ConsoleUnavailable:
@@ -237,12 +257,27 @@ class ConsoleBridge:
     async def _forward(self, websocket):
         writer = None
         tasks = []
+        session = None
         try:
+            # Recheck after the HTTP upgrade. Logout can happen between the
+            # handshake guard and registering the actual live connection.
+            if self.auth is not None:
+                session = self.auth.session_from_cookie(self._single_header(websocket.request.headers, "Cookie"))
+            if session is None:
+                await websocket.close(code=1008, reason="Sign in to your local Nutcracker account.")
+                return
+            self._clients.setdefault(session, set()).add(websocket)
+            if not self.auth.is_valid(session):
+                await websocket.close(code=1008, reason="Local sign-in ended.")
+                return
             self._check_socket()
             reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.unix_socket)), timeout=3)
             greeting = await asyncio.wait_for(reader.readexactly(12), timeout=3)
             if not RFB_GREETING.fullmatch(greeting):
                 await websocket.close(code=1011, reason="The VM display did not respond correctly.")
+                return
+            if not self.auth.is_valid(session):
+                await websocket.close(code=1008, reason="Local sign-in ended.")
                 return
             await websocket.send(greeting)
 
@@ -251,6 +286,9 @@ class ConsoleBridge:
                     data = await reader.read(65536)
                     if not data:
                         return
+                    if not self.auth.is_valid(session):
+                        await websocket.close(code=1008, reason="Local sign-in ended.")
+                        return
                     await websocket.send(data)
 
             async def to_vm():
@@ -258,16 +296,29 @@ class ConsoleBridge:
                     if not isinstance(message, bytes):
                         await websocket.close(code=1003, reason="The private console requires binary RFB messages.")
                         return
-                    writer.write(message)
+                    if not self.auth.run_if_valid(session, lambda: writer.write(message)):
+                        await websocket.close(code=1008, reason="Local sign-in ended.")
+                        return
                     await writer.drain()
 
-            tasks = [asyncio.create_task(from_vm()), asyncio.create_task(to_vm())]
+            async def session_expiry():
+                while self.auth.is_valid(session):
+                    await asyncio.sleep(0.5)
+                await websocket.close(code=1008, reason="Local sign-in ended.")
+
+            tasks = [asyncio.create_task(from_vm()), asyncio.create_task(to_vm()), asyncio.create_task(session_expiry())]
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except (ConsoleUnavailable, OSError, asyncio.TimeoutError, asyncio.IncompleteReadError):
             await websocket.close(code=1011, reason="The Windows VM display is unavailable. Check UTM and retry.")
         except self._connection_closed:
             pass
         finally:
+            if session is not None:
+                clients = self._clients.get(session)
+                if clients is not None:
+                    clients.discard(websocket)
+                    if not clients:
+                        self._clients.pop(session, None)
             for task in tasks:
                 if not task.done():
                     task.cancel()
