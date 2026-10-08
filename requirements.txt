@@ -1,0 +1,2 @@
+# Tested WebSocket implementation; supports the Mac's Python 3.9 or later.
+websockets==15.0.1
