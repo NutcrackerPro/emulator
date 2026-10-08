@@ -4,7 +4,8 @@
 const ui = Object.fromEntries([
   "console-status", "console-error", "connect-button", "focus-button", "fullscreen-button",
   "disconnect-button", "console-display", "console-empty", "console-empty-title", "console-detail",
-  "console-surface", "credentials-form", "vnc-password", "start-menu-button", "run-app-button"
+  "console-surface", "credentials-form", "vnc-password", "start-menu-button", "run-app-button",
+  "shortcut-status", "ctrl-alt-del-button"
 ].map((id) => [id, document.getElementById(id)]));
 const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
 const isLocalLauncher = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname)
@@ -14,6 +15,34 @@ let connected = false;
 let connecting = false;
 let intentionalDisconnect = false;
 let connectionTimer = null;
+let fullscreenRequest = 0;
+
+function unlockKeyboard() {
+  try { navigator.keyboard?.unlock?.(); } catch { /* Ordinary input stays available. */ }
+}
+
+function releaseGuestModifiers() {
+  if (!connected || !client) return;
+  for (const [keysym, code] of [
+    [0xffe1, "ShiftLeft"], [0xffe2, "ShiftRight"],
+    [0xffe3, "ControlLeft"], [0xffe4, "ControlRight"],
+    [0xffe9, "AltLeft"], [0xffea, "AltRight"],
+    [0xffeb, "MetaLeft"], [0xffec, "MetaRight"]
+  ]) client.sendKey(keysym, code, false);
+}
+
+function releaseGuestKeys() {
+  if (!connected || !client) return;
+  client.releaseKeys();
+  releaseGuestModifiers();
+}
+
+function leaveFullscreen() {
+  fullscreenRequest++;
+  unlockKeyboard();
+  if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+  return Promise.resolve();
+}
 
 function status(text, tone = "") {
   const badge = ui["console-status"];
@@ -35,6 +64,7 @@ function controls() {
   ui["focus-button"].disabled = !connected;
   ui["start-menu-button"].disabled = !connected;
   ui["run-app-button"].disabled = !connected;
+  ui["ctrl-alt-del-button"].disabled = !connected;
   ui["fullscreen-button"].disabled = !connected || !document.fullscreenEnabled;
   ui["console-display"].tabIndex = connected ? 0 : -1;
   ui["console-surface"].setAttribute("aria-busy", String(connecting));
@@ -86,7 +116,12 @@ async function connect() {
     initLogging("none");
     status("Connecting", "transitioning");
     empty("Connecting to your VM…", "Waiting for the live display from UTM. Windows may still be starting.");
-    const rfb = new RFB(ui["console-display"], socketUrl, { shared: true });
+    // Adapter for the pinned noVNC 1.7.0 runtime: release held keys before
+    // moving focus, including ordinary game keys whose key-up could be missed.
+    class LocalRFB extends RFB {
+      releaseKeys() { this._keyboard._allKeysUp(); }
+    }
+    const rfb = new LocalRFB(ui["console-display"], socketUrl, { shared: true });
     client = rfb;
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
@@ -107,6 +142,7 @@ async function connect() {
     rfb.addEventListener("disconnect", (event) => {
       if (client !== rfb) return;
       clearConnectionTimer();
+      leaveFullscreen();
       client = null;
       connected = false;
       connecting = false;
@@ -160,19 +196,31 @@ async function connect() {
 }
 
 ui["connect-button"].addEventListener("click", connect);
-ui["focus-button"].addEventListener("click", () => { if (connected) client.focus(); });
+ui["focus-button"].addEventListener("click", () => {
+  if (!connected) return;
+  releaseGuestKeys();
+  client.focus();
+});
 ui["start-menu-button"].addEventListener("click", () => {
   if (!connected) return;
+  releaseGuestKeys();
   client.sendKey(0xffeb, "MetaLeft");
   client.focus();
 });
 ui["run-app-button"].addEventListener("click", () => {
   if (!connected) return;
+  releaseGuestKeys();
   const current = client;
   current.sendKey(0xffeb, "MetaLeft", true);
   try { current.sendKey(0x72, "KeyR"); }
   finally { current.sendKey(0xffeb, "MetaLeft", false); }
   current.focus();
+});
+ui["ctrl-alt-del-button"].addEventListener("click", () => {
+  if (!connected) return;
+  releaseGuestKeys();
+  client.sendCtrlAltDel();
+  client.focus();
 });
 ui["console-display"].addEventListener("focus", () => { if (connected) client.focus(); });
 ui["disconnect-button"].addEventListener("click", () => {
@@ -180,19 +228,59 @@ ui["disconnect-button"].addEventListener("click", () => {
   intentionalDisconnect = true;
   status("Disconnecting", "transitioning");
   clearConnectionTimer();
+  releaseGuestKeys();
+  leaveFullscreen();
   client.disconnect();
 });
 ui["fullscreen-button"].addEventListener("click", async () => {
   if (!connected || !document.fullscreenEnabled) return;
+  if (document.fullscreenElement) { await leaveFullscreen(); return; }
+  const request = ++fullscreenRequest;
+  const current = client;
+  // Request capture from this user gesture. It only takes effect in fullscreen.
+  let lock = Promise.resolve(false);
   try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await ui["console-surface"].requestFullscreen();
+    if (navigator.keyboard?.lock) lock = navigator.keyboard.lock().then(() => true, () => false);
+  } catch { /* Browser-reserved keys stay with the host if capture is unavailable. */ }
+  try {
+    await ui["console-display"].requestFullscreen({ navigationUI: "hide" });
+    if (request !== fullscreenRequest) {
+      await lock;
+      if (!document.fullscreenElement) unlockKeyboard();
+      return;
+    }
+    if (!connected || client !== current) {
+      await leaveFullscreen();
+      await lock;
+      if (!document.fullscreenElement) unlockKeyboard();
+      return;
+    }
+    current.focus();
+    const captured = await lock;
+    if (request !== fullscreenRequest || !document.fullscreenElement || !connected) {
+      if (request === fullscreenRequest || !document.fullscreenElement) unlockKeyboard();
+      return;
+    }
+    ui["shortcut-status"].textContent = captured
+      ? "Fullscreen captures keyboard shortcuts allowed by your Mac. Hold Esc for two seconds or press Ctrl + Alt + Shift + M to leave."
+      : "Use Control for Windows shortcuts. This browser may keep some system shortcuts; use the Windows shortcut buttons when needed. Press Esc or Ctrl + Alt + Shift + M to leave fullscreen.";
   } catch {
-    error("The browser could not open fullscreen. You can keep using the display in this window.");
+    if (request === fullscreenRequest) {
+      fullscreenRequest++;
+      unlockKeyboard();
+      error("The browser could not open fullscreen. You can keep using the display in this window.");
+    }
+    await lock;
+    if (!document.fullscreenElement) unlockKeyboard();
   }
 });
 document.addEventListener("fullscreenchange", () => {
   ui["fullscreen-button"].lastChild.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+  if (!document.fullscreenElement) {
+    fullscreenRequest++;
+    unlockKeyboard();
+    releaseGuestKeys();
+  } else if (connected) client.focus();
 });
 ui["credentials-form"].addEventListener("submit", (event) => {
   event.preventDefault();
@@ -214,12 +302,16 @@ document.addEventListener("keydown", (event) => {
   if (connected && event.ctrlKey && event.altKey && event.shiftKey && event.code === "KeyM") {
     event.preventDefault();
     event.stopImmediatePropagation();
+    releaseGuestKeys();
     client.blur();
-    ui["disconnect-button"].focus();
+    leaveFullscreen().then(() => ui["focus-button"].focus());
   }
 }, true);
 window.addEventListener("pagehide", () => {
   clearConnectionTimer();
+  fullscreenRequest++;
+  unlockKeyboard();
+  releaseGuestKeys();
   ui["vnc-password"].value = "";
   if (client) client.disconnect();
 });
