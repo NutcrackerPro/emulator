@@ -93,7 +93,7 @@ Blue Archive's [official Steam Deck support](https://forum.nexon.com/bluearchive
 
 ## Repository name and hosting
 
-The project is `NutcrackerPro/nutcrackeremulator.github.io`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/nutcrackeremulator.github.io](https://nutcrackerpro.github.io/nutcrackeremulator.github.io/), published from the **main** branch's **/docs** folder. Its name does not allocate the separate `nutcrackeremulator.github.io` domain. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your password-protected local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
+The project is `NutcrackerPro/nutcrackerproemulator.github.io`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/nutcrackerproemulator.github.io](https://nutcrackerpro.github.io/nutcrackerproemulator.github.io/), published from the **main** branch's **/docs** folder. This emulator is a separate project page from the owner’s portfolio at `https://nutcrackerpro.github.io/`. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your password-protected local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
 
 ## Storage
 
