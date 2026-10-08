@@ -5,17 +5,97 @@ const ui = Object.fromEntries([
   "console-status", "console-error", "connect-button", "focus-button", "fullscreen-button",
   "disconnect-button", "console-display", "console-empty", "console-empty-title", "console-detail",
   "console-surface", "credentials-form", "vnc-password", "start-menu-button", "run-app-button",
-  "shortcut-status", "ctrl-alt-del-button", "logout-button"
+  "shortcut-status", "ctrl-alt-del-button", "logout-button", "display-mode", "display-resolution",
+  "display-pan-controls", "pan-left-button", "pan-right-button", "pan-up-button", "pan-down-button"
 ].map((id) => [id, document.getElementById(id)]));
 const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
-const isLocalLauncher = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname)
-  && location.protocol === "http:" && token && token !== "__NUTCRACKER_TOKEN__";
+const isLocalLauncher = ((["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname)
+  && location.protocol === "http:") || location.protocol === "https:")
+  && token && token !== "__NUTCRACKER_TOKEN__";
 let client = null;
 let connected = false;
 let connecting = false;
 let intentionalDisconnect = false;
 let connectionTimer = null;
 let fullscreenRequest = 0;
+
+// The display preference belongs to this browser, not the Windows machine.
+let displayMode = window.matchMedia("(max-width: 620px)").matches ? "fit" : "native";
+try {
+  const savedMode = localStorage.getItem("nutcracker.displayMode");
+  if (["fit", "native"].includes(savedMode)) displayMode = savedMode;
+} catch { /* Display controls also work when browser storage is unavailable. */ }
+let displayUpdateFrame = null;
+
+function displayScreen() {
+  return ui["console-display"].querySelector(":scope > div");
+}
+
+function updateDisplayDetails() {
+  displayUpdateFrame = null;
+  const canvas = ui["console-display"].querySelector("canvas");
+  const screen = displayScreen();
+  const hasDisplay = connected && canvas?.width > 0 && canvas?.height > 0;
+  const canPan = hasDisplay && displayMode === "native" && screen
+    && (screen.scrollWidth > screen.clientWidth + 1 || screen.scrollHeight > screen.clientHeight + 1);
+  ui["display-pan-controls"].hidden = !canPan;
+  ui["pan-left-button"].disabled = !canPan || screen.scrollLeft <= 1;
+  ui["pan-right-button"].disabled = !canPan || screen.scrollLeft + screen.clientWidth >= screen.scrollWidth - 1;
+  ui["pan-up-button"].disabled = !canPan || screen.scrollTop <= 1;
+  ui["pan-down-button"].disabled = !canPan || screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 1;
+  if (!hasDisplay) {
+    ui["display-resolution"].textContent = "Resolution appears when Windows connects.";
+    return;
+  }
+  const renderedWidth = canvas.getBoundingClientRect().width;
+  const scale = Math.round(renderedWidth / canvas.width * 100);
+  const detail = displayMode === "native"
+    ? `Native pixels${canPan ? " · Use arrows or scrollbars to see the whole desktop" : ""}`
+    : `Fit display · ${scale}%${scale > 100 ? " · Choose Native pixels for sharper text" : ""}`;
+  ui["display-resolution"].textContent = `${canvas.width} × ${canvas.height} · ${detail}`;
+}
+
+function scheduleDisplayDetails() {
+  if (displayUpdateFrame === null) displayUpdateFrame = requestAnimationFrame(updateDisplayDetails);
+}
+
+function applyDisplayMode() {
+  ui["display-mode"].value = displayMode;
+  ui["console-display"].dataset.displayMode = displayMode;
+  if (client) {
+    // Unclipped native pixels retain the complete framebuffer and scrollbars.
+    // Fit changes only the browser view, never the guest's display resolution.
+    client.clipViewport = false;
+    client.scaleViewport = displayMode === "fit";
+  }
+  scheduleDisplayDetails();
+}
+
+ui["display-mode"].addEventListener("change", () => {
+  if (!["fit", "native"].includes(ui["display-mode"].value)) return;
+  releaseGuestKeys();
+  displayMode = ui["display-mode"].value;
+  try { localStorage.setItem("nutcracker.displayMode", displayMode); } catch { /* Optional preference only. */ }
+  applyDisplayMode();
+});
+for (const [id, horizontal, vertical] of [
+  ["pan-left-button", -1, 0], ["pan-right-button", 1, 0],
+  ["pan-up-button", 0, -1], ["pan-down-button", 0, 1]
+]) ui[id].addEventListener("click", () => {
+  const screen = displayScreen();
+  if (!connected || displayMode !== "native" || !screen) return;
+  releaseGuestKeys();
+  screen.scrollBy({ left: horizontal * screen.clientWidth * 0.75, top: vertical * screen.clientHeight * 0.75, behavior: "auto" });
+  scheduleDisplayDetails();
+});
+// Canvas dimensions change when Windows changes resolution. Observe only DOM
+// geometry; no screenshot, pixel buffer, or Windows content is read here.
+new MutationObserver(scheduleDisplayDetails).observe(ui["console-display"], {
+  childList: true, subtree: true, attributes: true, attributeFilter: ["width", "height", "style"]
+});
+new ResizeObserver(scheduleDisplayDetails).observe(ui["console-display"]);
+ui["console-display"].addEventListener("scroll", scheduleDisplayDetails, true);
+applyDisplayMode();
 
 function unlockKeyboard() {
   try { navigator.keyboard?.unlock?.(); } catch { /* Ordinary input stays available. */ }
@@ -85,7 +165,10 @@ function safeWebSocketUrl(value) {
   if (typeof value !== "string") throw new Error("The launcher did not provide a console connection.");
   const url = new URL(value);
   // Only the launcher's signed, fixed local bridge is accepted. No host input exists.
-  if (url.protocol !== "ws:" || url.hostname !== location.hostname || url.pathname !== "/websockify" || url.username || url.password) {
+  const secure = location.protocol === "https:";
+  if (url.protocol !== (secure ? "wss:" : "ws:") || url.hostname !== location.hostname
+      || (secure && url.host !== location.host) || (!secure && url.port !== "8767")
+      || url.pathname !== "/websockify" || url.username || url.password || url.hash) {
     throw new Error("The launcher returned an unexpected console address. Restart the local launcher.");
   }
   return url.href;
@@ -127,7 +210,8 @@ async function connect() {
     }
     const rfb = new LocalRFB(ui["console-display"], socketUrl, { shared: true });
     client = rfb;
-    rfb.scaleViewport = true;
+    rfb.qualityLevel = 9;
+    applyDisplayMode();
     rfb.resizeSession = false;
     rfb.focusOnClick = true;
     rfb.viewOnly = false;
@@ -137,6 +221,7 @@ async function connect() {
       clearConnectionTimer();
       connecting = false;
       connected = true;
+      scheduleDisplayDetails();
       status("Live VM display", "running");
       ui["console-empty"].hidden = true;
       ui["credentials-form"].hidden = true;
@@ -150,6 +235,7 @@ async function connect() {
       client = null;
       connected = false;
       connecting = false;
+      scheduleDisplayDetails();
       ui["credentials-form"].hidden = true;
       ui["vnc-password"].value = "";
       status("Disconnected");
