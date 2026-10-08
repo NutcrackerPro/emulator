@@ -2,7 +2,7 @@
 
 ## Companion and browser console
 
-On 8 October 2026, all **51 automated tests passed**. Coverage includes loopback HTTP/WebSocket access controls, rejection of remote origins/hosts, session tokens, private-file/symlink rejection, VM-list parsing, UUID validation, missing UTM handling, graceful shutdown command construction, and browser-console forwarding. UTM responses and the display server in those tests are mocked; these results do not establish Windows boot or game compatibility.
+On 8 October 2026, all **83 automated tests passed**. Coverage includes loopback HTTP/WebSocket access controls, rejection of remote origins/hosts, password hash storage, authenticated sessions, sign-in throttling, logout and session-expiry closure of live WebSockets, safe public-page navigation, session tokens, private-file/symlink rejection, VM-list parsing, UUID validation, missing UTM handling, graceful shutdown command construction, and browser-console forwarding. UTM responses and the display server in those tests are mocked; these results do not establish Windows boot or game compatibility.
 
 A browser test with a mock RFB display server confirmed that the noVNC viewer displays pixels and forwards keyboard and mouse input. This is a client/bridge check, not proof of a Windows desktop.
 
@@ -49,6 +49,8 @@ When testing, record the date, UTM release, Windows release, guest graphics driv
 
 The virtual installation-disc drives were removed after installation, preserving the existing NVMe Windows disk. The VM restarted from that disk and reached the installed Windows desktop. Closing and reopening the browser console reconnects to the existing VM.
 
-Known temporary bundle-build downloads/tools, duplicate unbundled source, obsolete setup screenshots, regenerable Python caches, our installer copies inside Windows, diagnostic probes, and obsolete configuration backups were removed. Owner-downloaded files and installed apps were preserved. Windows ReTrim completed successfully against already unused sectors. The active disk was measured at approximately **46.32 GiB physically allocated** after that operation; its guest volume contained approximately **51.51 GiB of used space**. The ReTrim report is not a claim that all reported trimmed bytes became new free host space.
+Known temporary bundle-build downloads/tools, duplicate unbundled source, obsolete setup screenshots, regenerable Python caches, verified installer copies inside Windows, diagnostic probes, and obsolete configuration backups were removed. Owner-downloaded files and installed apps were preserved. Windows ReTrim completed successfully against already unused sectors. The active disk was measured at approximately **46.32 GiB physically allocated** after that operation; its guest volume contained approximately **51.51 GiB of used space**. The ReTrim report is not a claim that all reported trimmed bytes became new free host space.
 
-The public GitHub Pages launch page contains static HTML/CSS and an ordinary link to the localhost console. Local token, Host, Origin, and frame restrictions remain in place; the VM is not publicly exposed.
+The supplied local account opened the real, already running Windows desktop after server restart. Signing out returned to the sign-in page; reopening the console while signed out required authentication again. The account record contains only salted PBKDF2-SHA256 hash data, with 600,000 iterations, in a mode-0600 file beneath the mode-0700 ignored runtime directory. No plaintext password is published.
+
+The public GitHub Pages launch page contains static HTML/CSS and an ordinary link to the localhost console. Local account authentication, token, Host, Origin, and frame restrictions remain in place; the VM is not publicly exposed.
