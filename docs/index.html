@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Open your real Windows 11 desktop and Steam in Nutcracker's private browser console on your Mac.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <title>Nutcracker — Windows in your browser</title>
+  <style>
+    :root{color-scheme:dark;--bg:#101218;--panel:#191c25;--line:#303642;--text:#f0f1f6;--muted:#a3a9bb;--mint:#b0ead4}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 82% 10%,#29304455,transparent 50%),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:inherit;text-decoration:none}a:focus-visible{outline:3px solid var(--mint);outline-offset:5px}header,main,footer{max-width:1160px;margin:auto;padding-inline:32px}header{height:108px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:12px;font-size:23px;font-weight:700;letter-spacing:-.7px}.mark{color:#b5a2ef;font-size:34px;transform:rotate(-12deg)}.profile{font-size:13px;color:var(--muted)}.hero{display:grid;grid-template-columns:1.35fr 1fr;gap:64px;align-items:center;padding-block:88px 72px}.eyebrow{font-size:11px;letter-spacing:2.1px;color:var(--mint);font-weight:650}.hero h1{font-size:clamp(40px,5vw,66px);font-weight:650;letter-spacing:-2.6px;line-height:1.08;margin:22px 0}.lead{font-size:18px;color:var(--muted);max-width:510px}.actions{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:31px}.launch{display:inline-flex;align-items:center;gap:28px;padding:15px 23px;background:var(--mint);color:#142820;border-radius:10px;font-size:15px;font-weight:700;box-shadow:0 5px 25px #9ce5c414}.launch:hover{background:#cbf3e3}.source{font-size:13px;color:#c0b4e2}.keep{font-size:12px;color:#8b93a8;margin-top:16px}.features{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:linear-gradient(150deg,#202532,#171b23)}.feature{padding:25px 28px;border-bottom:1px solid var(--line)}.feature:last-child{border-bottom:0}.feature small{color:var(--mint);font-size:10px;letter-spacing:1.8px}.feature h2{font-size:19px;margin:7px 0 6px;font-weight:600;letter-spacing:-.4px}.feature p{font-size:13px;margin:0;color:var(--muted)}kbd{display:inline-block;border:1px solid #495363;border-bottom-width:3px;border-radius:5px;padding:1px 6px;font:11px system-ui;background:#272e3b;color:#e4e8f0;white-space:nowrap}.how{border-top:1px solid var(--line);padding-block:31px 45px;display:grid;grid-template-columns:1fr 1fr;gap:45px}.how h2{font-size:17px;margin:0 0 9px;font-weight:600}.how p{font-size:13px;color:var(--muted);margin:0;max-width:480px}.how a{color:var(--mint);text-decoration:underline;text-underline-offset:4px}footer{border-top:1px solid var(--line);padding-block:21px 32px;display:flex;justify-content:space-between;gap:25px;color:#828b9e;font-size:11px}.note{max-width:620px}@media(max-width:760px){header,main,footer{padding-inline:23px}header{height:82px}.hero{grid-template-columns:1fr;gap:37px;padding-block:48px 40px}.hero h1{letter-spacing:-1.8px}.lead{font-size:16px}.how{grid-template-columns:1fr;gap:24px}.feature{padding:21px 24px}footer{display:block}footer>a{display:inline-block;margin-top:16px}}
+  </style>
+</head>
+<body>
+  <header><a class="brand" href="./" aria-label="Nutcracker home"><span class="mark" aria-hidden="true">N</span>nutcracker</a><a class="profile" href="https://nutcrackerpro.github.io/">Back to portfolio ↗</a></header>
+  <main>
+    <section class="hero" aria-labelledby="title">
+      <div><p class="eyebrow">YOUR MAC. YOUR WINDOWS.</p><h1 id="title">Windows, in<br>your browser.</h1><p class="lead">Open your real Windows 11 desktop and Steam in the Nutcracker browser console.</p><div class="actions"><a class="launch" href="http://localhost:8765/console.html" target="_blank" rel="noopener noreferrer">Open Windows <span aria-hidden="true">↗</span></a><a class="source" href="https://github.com/NutcrackerPro/nutcrackeremulator.github.io">Get the project ↗</a></div><p class="keep">Keep the Nutcracker launcher running on the Mac that holds your VM.</p></div>
+      <div class="features">
+        <article class="feature"><small>01 / FULLSCREEN</small><h2>Just your Windows display.</h2><p>Use Fullscreen in the console to hide its toolbar, labels, and website controls.</p></article>
+        <article class="feature"><small>02 / KEYBOARD</small><h2>Your Windows shortcuts.</h2><p>Use <kbd>Ctrl</kbd> for Windows shortcuts. The console also has Start, Run, and <kbd>Ctrl + Alt + Del</kbd> buttons.</p></article>
+        <article class="feature"><small>03 / PRIVATE MACHINE</small><h2>Your desktop stays on your Mac.</h2><p>This public page links to your local console. Your Windows files and Steam account stay in your VM.</p></article>
+      </div>
+    </section>
+    <section class="how" aria-label="Opening and controlling Windows">
+      <div><h2>If Windows does not open</h2><p>Start <strong>Launch Nutcracker.command</strong> on your Mac and start your Windows VM, then choose Open Windows again. Setup instructions are in the <a href="https://github.com/NutcrackerPro/nutcrackeremulator.github.io#start-the-private-launcher">project guide</a>. GitHub hosts this launch page; your Mac runs Windows.</p></div>
+      <div><h2>Leaving fullscreen</h2><p>Hold <kbd>Esc</kbd> for two seconds, or press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd>. Some shortcuts are reserved by your Mac or browser.</p></div>
+    </section>
+  </main>
+  <footer><span class="note">No paid hosting or cloud computer. Windows licensing is separate. Browser audio and Steam game compatibility remain limited.</span><a href="https://github.com/NutcrackerPro">Made for Nutcracker ↗</a></footer>
+</body>
+</html>
