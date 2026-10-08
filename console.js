@@ -4,7 +4,7 @@
 const ui = Object.fromEntries([
   "console-status", "console-error", "connect-button", "focus-button", "fullscreen-button",
   "disconnect-button", "console-display", "console-empty", "console-empty-title", "console-detail",
-  "console-surface", "credentials-form", "vnc-password"
+  "console-surface", "credentials-form", "vnc-password", "start-menu-button", "run-app-button"
 ].map((id) => [id, document.getElementById(id)]));
 const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
 const isLocalLauncher = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname)
@@ -33,6 +33,8 @@ function controls() {
   ui["connect-button"].textContent = client || connected ? "Connected" : "Connect";
   ui["disconnect-button"].disabled = !client;
   ui["focus-button"].disabled = !connected;
+  ui["start-menu-button"].disabled = !connected;
+  ui["run-app-button"].disabled = !connected;
   ui["fullscreen-button"].disabled = !connected || !document.fullscreenEnabled;
   ui["console-display"].tabIndex = connected ? 0 : -1;
   ui["console-surface"].setAttribute("aria-busy", String(connecting));
@@ -159,6 +161,19 @@ async function connect() {
 
 ui["connect-button"].addEventListener("click", connect);
 ui["focus-button"].addEventListener("click", () => { if (connected) client.focus(); });
+ui["start-menu-button"].addEventListener("click", () => {
+  if (!connected) return;
+  client.sendKey(0xffeb, "MetaLeft");
+  client.focus();
+});
+ui["run-app-button"].addEventListener("click", () => {
+  if (!connected) return;
+  const current = client;
+  current.sendKey(0xffeb, "MetaLeft", true);
+  try { current.sendKey(0x72, "KeyR"); }
+  finally { current.sendKey(0xffeb, "MetaLeft", false); }
+  current.focus();
+});
 ui["console-display"].addEventListener("focus", () => { if (connected) client.focus(); });
 ui["disconnect-button"].addEventListener("click", () => {
   if (!client) return;
