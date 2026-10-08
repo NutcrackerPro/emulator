@@ -12,7 +12,8 @@
   };
   const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
   const localHost = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
-  const isLauncher = localHost && location.protocol === "http:" && token && token !== "__NUTCRACKER_TOKEN__";
+  const isLauncher = ((localHost && location.protocol === "http:") || location.protocol === "https:")
+    && token && token !== "__NUTCRACKER_TOKEN__";
   let snapshot = null;
   let busy = false;
   let connected = false;
