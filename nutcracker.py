@@ -3,7 +3,8 @@
 
 This program is a launcher, not a Windows emulator or a Windows installer.
 It reads real UTM state. It cannot certify Windows boot or Steam compatibility.
-Only Python's standard library is required (Python 3.9 or later).
+Python 3.9 or later is required. VM controls use the standard library; the
+optional browser console uses the tested dependency in requirements.txt.
 """
 
 import argparse
@@ -22,6 +23,8 @@ import urllib.parse
 import uuid
 import webbrowser
 
+from console_bridge import ConsoleBridge, DEFAULT_PORT as CONSOLE_PORT
+
 
 ROOT = Path(__file__).resolve().parent
 COMMAND_TIMEOUT = 15
@@ -37,7 +40,25 @@ ASSETS = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/console.html": ("console.html", "text/html; charset=utf-8"),
+    "/console.js": ("console.js", "text/javascript; charset=utf-8"),
     "/steam-setup.ps1": ("steam-setup.ps1", "application/octet-stream"),
+}
+VENDOR_TYPES = {
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
 }
 
 
@@ -236,12 +257,20 @@ class UTMCompanion:
 class LocalServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=8765, root=ROOT, companion=None):
+    def __init__(self, port=8765, root=ROOT, companion=None, console=None, console_port=CONSOLE_PORT, console_socket=None):
         # The bind address is deliberately fixed and has no configurable override.
         self.root = Path(root).resolve()
         self.companion = companion or UTMCompanion(self.root)
         self.token = secrets.token_urlsafe(32)
         super().__init__(("127.0.0.1", port), RequestHandler)
+        self.console = console or ConsoleBridge(self.server_port, self.token, port=console_port, unix_socket=console_socket)
+        self.console.start()
+
+    def server_close(self):
+        console = getattr(self, "console", None)
+        if console is not None:
+            console.close()
+        super().server_close()
 
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
@@ -294,9 +323,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        websocket_port = self.server.console.port
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "img-src 'self' data:; connect-src 'self' "
+            "ws://localhost:" + str(websocket_port) + " ws://127.0.0.1:" + str(websocket_port) + "; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         ))
         self.send_header("Connection", "close")
@@ -339,6 +370,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             raise CompanionError("The JSON request must be an object.", 400)
         return value
 
+    def _vendor_asset(self, path):
+        prefix = "/vendor/novnc/"
+        if not path.startswith(prefix):
+            raise CompanionError("This file is not available from the companion.", 404)
+        relative = path[len(prefix):]
+        parts = relative.split("/")
+        if not parts or any(part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+            raise CompanionError("This vendor file is unavailable.", 404)
+        base = self.server.root / "vendor" / "novnc"
+        candidate = base.joinpath(*parts)
+        content_type = VENDOR_TYPES.get(candidate.suffix.lower())
+        if content_type is None:
+            raise CompanionError("This vendor file type is unavailable.", 404)
+        current = self.server.root
+        for part in ("vendor", "novnc", *parts):
+            current = current / part
+            if current.is_symlink():
+                raise CompanionError("Vendor links are not served by the companion.", 404)
+        if not candidate.is_file():
+            raise CompanionError("This vendor file is missing.", 404)
+        try:
+            candidate.resolve().relative_to(base.resolve())
+        except ValueError:
+            raise CompanionError("This vendor file is unavailable.", 404) from None
+        return candidate, content_type
+
     def do_GET(self):
         try:
             self._guard()
@@ -346,18 +403,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if path == "/api/status":
                 self._json(200, self.server.companion.status())
                 return
-            if path not in ASSETS:
-                raise CompanionError("This file is not available from the companion.", 404)
-            filename, content_type = ASSETS[path]
-            file = self.server.root / filename
-            # Only these fixed assets are accessible, even if a symlink is added.
-            if file.is_symlink() or not file.is_file() or file.resolve().parent != self.server.root:
-                raise CompanionError("This companion file is missing.", 404)
+            if path == "/api/console":
+                hostname = self._header("Host").split(":", 1)[0]
+                self._json(200, self.server.console.info(hostname))
+                return
+            if path in ASSETS:
+                filename, content_type = ASSETS[path]
+                file = self.server.root / filename
+                # Only these fixed assets are accessible, even if a symlink is added.
+                if file.is_symlink() or not file.is_file() or file.resolve().parent != self.server.root:
+                    raise CompanionError("This companion file is missing.", 404)
+            else:
+                file, content_type = self._vendor_asset(path)
+                filename = file.name
             try:
                 body = file.read_bytes()
             except OSError:
                 raise CompanionError("This companion file could not be read.", 500) from None
-            if filename == "index.html":
+            if path in {"/", "/index.html", "/console.html"}:
                 body = body.replace(b"__NUTCRACKER_TOKEN__", self.server.token.encode("ascii"))
             self._send(200, body, content_type, download=filename == "steam-setup.ps1")
         except CompanionError as error:
