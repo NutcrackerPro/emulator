@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restart this Mac's saved emulator connection and authenticated launcher."""
 import json
+import http.client
 import os
 from pathlib import Path
 import signal
@@ -9,12 +10,32 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 
 import nutcracker
 
 
 ROOT = Path(__file__).resolve().parent
 SOCKET = Path('/tmp/nutcracker-tailscale-' + str(os.getuid()) + '.sock')
+
+
+def reopen_existing_host():
+    connection = http.client.HTTPConnection('127.0.0.1', 8765, timeout=2)
+    try:
+        connection.request('GET', '/api/auth', headers={'Host': '127.0.0.1:8765'})
+        response = connection.getresponse()
+        body = response.read(4097)
+        if response.status != 200 or not response.getheader('Server', '').startswith('Nutcracker') or len(body) > 4096:
+            return False
+        data = json.loads(body)
+        if not isinstance(data, dict) or type(data.get('authenticated')) is not bool or type(data.get('configured')) is not bool:
+            return False
+        webbrowser.open('http://localhost:8765/console.html')
+        return True
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def wait_until_running(status, daemon=None, attempts=60, interval=0.5):
@@ -54,6 +75,9 @@ def stop_owned_process(process, timeout):
 
 
 def main():
+    if not sys.argv[1:] and reopen_existing_host():
+        print('The existing Windows connection is open in your browser.')
+        return 0
     origin = nutcracker.remote_settings(ROOT)
     daemon = None
     awake = None
