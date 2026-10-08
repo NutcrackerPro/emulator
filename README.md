@@ -2,7 +2,7 @@
 
 A private dashboard and browser display for a real Windows virtual machine on an Apple Silicon Mac. **UTM** runs the VM on your Mac; a local companion connects its screen, keyboard, and mouse to the browser using **noVNC**. This project does not contain Windows, a Windows licence, or a replacement for UTM's virtualization engine.
 
-**Current status:** the real VM's UEFI screen has appeared in the browser, and keyboard input reached it. Windows installation, a Windows desktop, Steam login, and Blue Archive gameplay are still pending. The dashboard reads actual UTM status. No purchases have been made; the launcher, browser console, and UTM download require no paid service. Windows licensing is separate.
+**Current status:** the real Windows 11 Home installer is working in the browser with keyboard and mouse input. Installation has started on the empty virtual disk and continued through a restart. A Windows desktop, Steam login, and Blue Archive gameplay still need verification. The dashboard reads actual UTM status. No purchases have been made; the launcher, browser console, and UTM download require no paid service. Windows licensing is separate.
 
 ## Start the private launcher
 
@@ -35,10 +35,11 @@ Then double-click **Launch Nutcracker.command** in Finder. The dashboard and con
 
 ### Connect the VM to the browser
 
-The verified configuration uses the free **UTM 4.7.5** download. With the VM stopped, select **virtio-ramfb** without GL as its display device. In UTM's **QEMU** settings, add this additional argument:
+The verified configuration uses the free **UTM 4.7.5** download. With the VM stopped, select **virtio-ramfb** without GL as its display device. In UTM's **Arguments** settings, add these two separate additional argument entries:
 
 ```text
--vnc unix:nutcracker-vnc.sock
+-vnc
+unix:nutcracker-vnc.sock
 ```
 
 Configure only one VM with that socket name. Keep the relative filename: signed UTM launches QEMU inside its approved shared app-group directory, so the socket resolves to:
