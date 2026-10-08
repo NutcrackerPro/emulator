@@ -6,7 +6,10 @@ These tests never start, stop, install, or open a real VM or application.
 
 import http.client
 import json
+import os
 from pathlib import Path
+import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -15,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 import nutcracker
+import console_bridge
 
 
 VM_ID = "11111111-2222-4333-a444-555555555555"
@@ -218,6 +222,19 @@ class FakeCompanion:
         return {"ok": True, "message": "UTM opened"}
 
 
+class FakeConsole:
+    port = 8767
+
+    def start(self):
+        pass
+
+    def close(self):
+        pass
+
+    def info(self, hostname):
+        return {"available": False, "url": None, "error": "Test display unavailable", "transport": "vnc"}
+
+
 class LiveHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -227,9 +244,14 @@ class LiveHTTPTests(unittest.TestCase):
         (cls.root / "styles.css").write_text("body { color: white; }", encoding="utf-8")
         (cls.root / "app.js").write_text("'use strict';", encoding="utf-8")
         (cls.root / "steam-setup.ps1").write_text("Write-Host 'Setup'", encoding="utf-8")
-        (cls.root / "secret.txt").write_text("not served", encoding="utf-8")
+        (cls.root / "console.html").write_text('<meta name="nutcracker-token" content="__NUTCRACKER_TOKEN__">', encoding="utf-8")
+        (cls.root / "console.js").write_text("'use strict';", encoding="utf-8")
+        (cls.root / "vendor/novnc/core").mkdir(parents=True)
+        (cls.root / "vendor/novnc/core/rfb.js").write_text("export default class RFB {}", encoding="utf-8")
+        (cls.root / "vendor/novnc/LICENSE.txt").write_text("Public vendor license", encoding="utf-8")
+        (cls.root / "secret.txt").write_text("private-fixture-content-321", encoding="utf-8")
         cls.fake = FakeCompanion()
-        cls.server = nutcracker.LocalServer(port=0, root=cls.root, companion=cls.fake)
+        cls.server = nutcracker.LocalServer(port=0, root=cls.root, companion=cls.fake, console=FakeConsole())
         cls.host = "127.0.0.1:" + str(cls.server.server_port)
         cls.origin = "http://" + cls.host
         cls.thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
@@ -337,7 +359,7 @@ class LiveHTTPTests(unittest.TestCase):
             with self.subTest(path=path):
                 status, _, body = self.request(path=path)
                 self.assertEqual(status, 404)
-                self.assertNotIn(b"not served", body)
+                self.assertNotIn(b"private-fixture-content-321", body)
         status, _, _ = self.request(path="http://evil.example/api/status", headers={"Host": self.host})
         self.assertEqual(status, 400)
 
@@ -349,7 +371,7 @@ class LiveHTTPTests(unittest.TestCase):
         try:
             status, _, body = self.request(path="/app.js")
             self.assertEqual(status, 404)
-            self.assertNotIn(b"not served", body)
+            self.assertNotIn(b"private-fixture-content-321", body)
         finally:
             script.unlink()
             script.write_bytes(original)
@@ -367,6 +389,46 @@ class LiveHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('filename="steam-setup.ps1"', headers["Content-Disposition"])
         self.assertIn(b"Write-Host", body)
+
+    def test_console_page_injects_token_and_allows_only_its_fixed_websocket_port(self):
+        status, headers, body = self.request(path="/console.html")
+        self.assertEqual(status, 200)
+        self.assertIn(self.server.token.encode("ascii"), body)
+        self.assertIn("ws://localhost:8767", headers["Content-Security-Policy"])
+        self.assertIn("ws://127.0.0.1:8767", headers["Content-Security-Policy"])
+        self.assertNotIn("ws://*", headers["Content-Security-Policy"])
+
+    def test_console_api_does_not_infer_display_availability_from_vm_status(self):
+        status, _, body = self.request(path="/api/console")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {
+            "available": False, "url": None, "error": "Test display unavailable", "transport": "vnc",
+        })
+        status, _, _ = self.request(path="/api/console", headers={"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+
+    def test_vendor_modules_and_licenses_are_served_but_escape_paths_are_not(self):
+        for path in ("/vendor/novnc/core/rfb.js", "/vendor/novnc/LICENSE.txt"):
+            with self.subTest(path=path):
+                status, _, _ = self.request(path=path)
+                self.assertEqual(status, 200)
+        for path in ("/vendor/novnc/../../secret.txt", "/vendor/novnc/core/%2e%2e/secret.txt", "/vendor/novnc//core/rfb.js", "/vendor/novnc/core/rfb.py"):
+            with self.subTest(path=path):
+                status, _, _ = self.request(path=path)
+                self.assertEqual(status, 404)
+
+    def test_vendor_directory_symlink_cannot_expose_other_files(self):
+        target = self.root / "vendor/novnc/core"
+        held = self.root / "vendor/novnc/held"
+        target.rename(held)
+        target.symlink_to(self.root, target_is_directory=True)
+        try:
+            status, _, body = self.request(path="/vendor/novnc/core/secret.txt")
+            self.assertEqual(status, 404)
+            self.assertNotIn(b"private-fixture-content-321", body)
+        finally:
+            target.unlink()
+            held.rename(target)
 
     def test_unsupported_methods_do_not_trigger_actions(self):
         status, _, _ = self.request("OPTIONS", "/api/vm/start")
@@ -386,6 +448,268 @@ class LiveHTTPTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(self.fake.status_reads, 0)
+
+
+class MockRFBServer:
+    """A tiny upstream RFB handshake fixture, never a simulated user desktop."""
+
+    def __init__(self, path, greeting=b"RFB 003.008\n"):
+        self.path = path
+        self.greeting = greeting
+        self.stopped = threading.Event()
+        self.connections = 0
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.bind(str(path))
+        path.chmod(0o600)
+        self.socket.listen(8)
+        self.socket.settimeout(0.1)
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
+
+    def _accept(self):
+        while not self.stopped.is_set():
+            try:
+                connection, _ = self.socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    @staticmethod
+    def _read(connection, length):
+        data = bytearray()
+        while len(data) < length:
+            chunk = connection.recv(length - len(data))
+            if not chunk:
+                return None
+            data.extend(chunk)
+        return bytes(data)
+
+    def _handle(self, connection):
+        with connection:
+            try:
+                connection.settimeout(2)
+                connection.sendall(self.greeting)
+                if self._read(connection, 12) != b"RFB 003.008\n":
+                    return  # Availability probes close after the version greeting.
+                connection.sendall(b"\x01\x01")  # One security type: None.
+                if self._read(connection, 1) != b"\x01":
+                    return
+                connection.sendall(b"\x00\x00\x00\x00")
+                if self._read(connection, 1) is None:
+                    return
+                name = b"RFB protocol test fixture"
+                pixel_format = struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
+                connection.sendall(struct.pack(">HH", 1, 1) + pixel_format + struct.pack(">I", len(name)) + name)
+                while not self.stopped.is_set():
+                    message = connection.recv(65536)
+                    if not message:
+                        return
+                    connection.sendall(message)
+            except OSError:
+                return
+
+    def close(self):
+        self.stopped.set()
+        self.socket.close()
+        self.thread.join(timeout=1)
+
+
+class RFBClientBuffer:
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.buffer = bytearray()
+
+    def read(self, length):
+        while len(self.buffer) < length:
+            self.buffer.extend(self.websocket.recv(timeout=2))
+        value = bytes(self.buffer[:length])
+        del self.buffer[:length]
+        return value
+
+
+class LiveConsoleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            console_bridge.load_websockets()
+        except ImportError:
+            raise unittest.SkipTest("Install requirements.txt to run live browser-console tests.")
+        from websockets.sync.client import connect
+        from websockets.exceptions import ConnectionClosed
+        cls.connect = staticmethod(connect)
+        cls.connection_closed = ConnectionClosed
+        # Keep this Unix socket path below macOS's ~104-byte length limit.
+        temporary_base = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
+        cls.temp = tempfile.TemporaryDirectory(prefix="nutcracker-test-", dir=temporary_base)
+        cls.root = Path(cls.temp.name)
+        cls.root.chmod(0o700)
+        cls.target = cls.root / "rfb.sock"
+        cls.rfb = MockRFBServer(cls.target)
+        cls.server = nutcracker.LocalServer(
+            port=0, root=cls.root, companion=FakeCompanion(), console_port=0, console_socket=cls.target,
+        )
+        cls.bridge = cls.server.console
+        if not cls.bridge.running:
+            raise RuntimeError(cls.bridge.error)
+        cls.origin = "http://127.0.0.1:" + str(cls.server.server_port)
+        cls.ws_host = "127.0.0.1:" + str(cls.bridge.port)
+        cls.url = "ws://" + cls.ws_host + "/websockify?token=" + cls.server.token
+        cls.http_thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        cls.http_thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.http_thread.join(timeout=2)
+        cls.rfb.close()
+        cls.temp.cleanup()
+
+    def handshake(self, path=None, **overrides):
+        headers = {
+            "Origin": self.origin,
+            "Host": self.ws_host,
+            "Upgrade": "websocket",
+            "Connection": "Upgrade",
+            "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        }
+        headers.update(overrides)
+        connection = http.client.HTTPConnection("127.0.0.1", self.bridge.port, timeout=3)
+        try:
+            connection.request("GET", path or "/websockify?token=" + self.server.token, headers=headers)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def test_browser_bridge_listens_only_on_loopback(self):
+        self.assertTrue(self.bridge.running)
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+        self.assertEqual(self.bridge._bind_address, "127.0.0.1")
+        self.assertEqual(self.bridge.origins, [
+            "http://localhost:" + str(self.server.server_port), self.origin,
+        ])
+
+    def test_complete_binary_rfb_handshake_and_keyboard_pointer_forwarding(self):
+        with self.connect(self.url, origin=self.origin, proxy=None, subprotocols=["binary"], open_timeout=2) as websocket:
+            self.assertEqual(websocket.subprotocol, "binary")
+            client = RFBClientBuffer(websocket)
+            self.assertEqual(client.read(12), b"RFB 003.008\n")
+            websocket.send(b"RFB 003.008\n")
+            self.assertEqual(client.read(2), b"\x01\x01")
+            websocket.send(b"\x01")
+            self.assertEqual(client.read(4), b"\x00\x00\x00\x00")
+            websocket.send(b"\x01")
+            server_init = client.read(24)
+            self.assertEqual(struct.unpack(">HH", server_init[:4]), (1, 1))
+            name_length = struct.unpack(">I", server_init[20:24])[0]
+            self.assertEqual(client.read(name_length), b"RFB protocol test fixture")
+            keyboard_and_pointer = struct.pack(">BBHI", 4, 1, 0, 65) + struct.pack(">BBHH", 5, 1, 18, 27)
+            websocket.send(keyboard_and_pointer)
+            self.assertEqual(client.read(len(keyboard_and_pointer)), keyboard_and_pointer)
+
+    def test_remote_missing_and_wrong_port_origins_are_rejected(self):
+        for origin in ("https://evil.example", "null", "", "http://localhost:1"):
+            with self.subTest(origin=origin):
+                status, body = self.handshake(Origin=origin)
+                self.assertEqual(status, 403)
+                self.assertNotIn(self.server.token.encode(), body)
+
+    def test_wrong_host_and_cross_site_metadata_are_rejected(self):
+        for headers in ({"Host": "evil.example:" + str(self.bridge.port)}, {"Sec-Fetch-Site": "cross-site"}):
+            with self.subTest(headers=headers):
+                status, _ = self.handshake(**headers)
+                self.assertEqual(status, 403)
+
+    def test_wrong_missing_duplicate_and_unicode_tokens_are_rejected(self):
+        for path in ("/websockify", "/websockify?token=wrong", "/websockify?token=caf%C3%A9",
+                     "/websockify?token=" + self.server.token + "&token=" + self.server.token,
+                     "/websockify?token=" + self.server.token + "&target=evil.example"):
+            with self.subTest(path=path):
+                status, body = self.handshake(path)
+                self.assertEqual(status, 403)
+                self.assertNotIn(self.server.token.encode(), body)
+
+    def test_ws_route_does_not_accept_arbitrary_files_or_upstream_targets(self):
+        for path in ("/private/file?token=" + self.server.token, "http://evil.example/websockify?token=" + self.server.token):
+            with self.subTest(path=path):
+                status, _ = self.handshake(path)
+                self.assertEqual(status, 404)
+
+    def test_text_frames_are_rejected(self):
+        with self.connect(self.url, origin=self.origin, proxy=None, open_timeout=2) as websocket:
+            self.assertEqual(websocket.recv(timeout=2), b"RFB 003.008\n")
+            websocket.send("text is not VNC")
+            with self.assertRaises(self.connection_closed) as caught:
+                websocket.recv(timeout=2)
+            self.assertEqual(caught.exception.rcvd.code, 1003)
+
+    def test_console_api_requires_actual_rfb_greeting_and_signs_local_url(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        try:
+            connection.request("GET", "/api/console")
+            response = connection.getresponse()
+            value = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(value, {"available": True, "url": self.url, "error": None, "transport": "vnc"})
+        finally:
+            connection.close()
+
+    def test_missing_stale_or_non_socket_target_is_unavailable(self):
+        for target in (self.root / "missing.sock", self.root / "file.sock", self.root / "stale.sock"):
+            with self.subTest(target=target):
+                if target.name == "file.sock":
+                    target.write_text("not a socket")
+                if target.name == "stale.sock":
+                    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    stale.bind(str(target))
+                    stale.close()
+                bridge = console_bridge.ConsoleBridge(self.server.server_port, "test", unix_socket=target)
+                bridge.running = True
+                value = bridge.info("127.0.0.1")
+                self.assertFalse(value["available"])
+                self.assertIsNone(value["url"])
+                self.assertIsNotNone(value["error"])
+
+    def test_socket_and_parent_permissions_are_private(self):
+        self.target.chmod(0o777)
+        self.assertTrue(self.bridge.info("127.0.0.1")["available"])
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o600)
+        self.root.chmod(0o755)
+        try:
+            self.assertFalse(self.bridge.info("127.0.0.1")["available"])
+        finally:
+            self.root.chmod(0o700)
+
+    def test_live_non_rfb_server_is_unavailable(self):
+        target = self.root / "invalid.sock"
+        upstream = MockRFBServer(target, greeting=b"HTTP/1.1 200")
+        try:
+            bridge = console_bridge.ConsoleBridge(self.server.server_port, "test", unix_socket=target)
+            bridge.running = True
+            value = bridge.info()
+            self.assertFalse(value["available"])
+            self.assertIsNone(value["url"])
+            self.assertIn("VNC greeting", value["error"])
+        finally:
+            upstream.close()
+
+    def test_socket_symlink_and_wrong_ownership_are_rejected(self):
+        link = self.root / "link.sock"
+        link.symlink_to(self.target)
+        bridge = console_bridge.ConsoleBridge(self.server.server_port, "test", unix_socket=link)
+        bridge.running = True
+        self.assertFalse(bridge.info()["available"])
+        with patch("console_bridge.os.getuid", return_value=os.getuid() + 1):
+            self.assertFalse(self.bridge.info()["available"])
+
+    def test_tokens_cannot_be_written_by_library_logging(self):
+        self.assertFalse(self.bridge._logger.isEnabledFor(50))
+        self.assertFalse(self.bridge._logger.propagate)
 
 
 if __name__ == "__main__":
