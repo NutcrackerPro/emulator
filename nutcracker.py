@@ -39,6 +39,42 @@ SESSION_COOKIE = "nutcracker_session"
 SESSION_SECONDS = 8 * 60 * 60
 PASSWORD_ITERATIONS = 600000
 NAVIGATION_PATHS = frozenset({"/", "/index.html", "/console.html", "/login", "/login.html"})
+
+
+def validate_remote_origin(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or value != value.strip() or re.search(r"[\x00-\x20\x7f]", value):
+        raise CompanionError("Use the exact HTTPS hostname provided by your internet tunnel.", 400)
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise CompanionError("Use the exact HTTPS hostname provided by your internet tunnel.", 400) from None
+    hostname = parsed.hostname or ""
+    if (parsed.scheme != "https" or not hostname or parsed.username or parsed.password
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+            or port not in {None, 443} or len(hostname) > 253
+            or "." not in hostname or hostname.endswith((".local", ".localhost"))
+            or re.fullmatch(r"[0-9.]+", hostname)
+            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in hostname.split("."))):
+        raise CompanionError("Use the exact HTTPS hostname provided by your internet tunnel.", 400)
+    return "https://" + hostname
+
+
+def remote_settings(root):
+    file = Path(root) / ".runtime" / "remote.json"
+    if not file.exists():
+        return None
+    if file.is_symlink() or file.parent.is_symlink() or file.stat().st_size > 2048:
+        raise CompanionError("The internet connection settings are invalid.", 503)
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != {"origin"}:
+            raise ValueError()
+        return validate_remote_origin(data["origin"])
+    except (ValueError, OSError, TypeError):
+        raise CompanionError("The internet connection settings could not be read.", 503) from None
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 VM_ROW = re.compile(r"^(" + UUID_PATTERN + r")\s+(\S+)\s+(.*)$")
 VM_STATUSES = frozenset({
@@ -477,16 +513,18 @@ class UTMCompanion:
 class LocalServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=8765, root=ROOT, companion=None, console=None, console_port=CONSOLE_PORT, console_socket=None, auth=None):
+    def __init__(self, port=8765, root=ROOT, companion=None, console=None, console_port=CONSOLE_PORT, console_socket=None, auth=None, remote_origin=None):
         # The bind address is deliberately fixed and has no configurable override.
         self.root = Path(root).resolve()
+        self.remote_origin = validate_remote_origin(remote_origin)
+        self.remote_host = urllib.parse.urlsplit(self.remote_origin).netloc if self.remote_origin else None
         self.companion = companion or UTMCompanion(self.root)
         self.auth = auth if auth is not None else LocalAuth(self.root)
         self.token = secrets.token_urlsafe(32)
         self.login_token = secrets.token_urlsafe(32)
         self.style_nonce = secrets.token_urlsafe(24)
         super().__init__(("127.0.0.1", port), RequestHandler)
-        self.console = console or ConsoleBridge(self.server_port, self.token, port=console_port, unix_socket=console_socket, auth=self.auth)
+        self.console = console or ConsoleBridge(self.server_port, self.token, port=console_port, unix_socket=console_socket, auth=self.auth, remote_origin=self.remote_origin)
         self.console.start()
 
     def server_close(self):
@@ -517,11 +555,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def _guard(self, mutation=False, login=False):
         host = self._header("Host")
         port = self.server.server_port
-        if host not in {"127.0.0.1:" + str(port), "localhost:" + str(port)}:
-            raise CompanionError("This private companion accepts local requests only.", 403)
+        allowed_hosts = {"127.0.0.1:" + str(port), "localhost:" + str(port)}
+        if self.server.remote_host:
+            allowed_hosts.add(self.server.remote_host)
+        if host not in allowed_hosts:
+            raise CompanionError("This companion accepts only its configured addresses.", 403)
         origin = self._header("Origin")
-        if (origin is not None or mutation) and origin != "http://" + host:
-            raise CompanionError("Open the companion directly in your local browser.", 403)
+        expected_origin = self.server.remote_origin if host == self.server.remote_host else "http://" + host
+        if (origin is not None or mutation) and origin != expected_origin:
+            raise CompanionError("Open the Nutcracker sign-in page directly in your browser.", 403)
         fetch_site = self._header("Sec-Fetch-Site")
         if fetch_site not in {None, "none", "same-origin"}:
             # A public launch-page link may open this one local sign-in entry.
@@ -565,16 +607,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if cookie is not None:
+            if self.headers.get("Host") == self.server.remote_host:
+                cookie += "; Secure"
             self.send_header("Set-Cookie", cookie)
         if location is not None:
             self.send_header("Location", location)
         if status == 429:
             self.send_header("Retry-After", "60")
         websocket_port = self.server.console.port
+        connections = ("wss://" + self.server.remote_host if self.server.remote_host and self.headers.get("Host") == self.server.remote_host
+                       else "ws://localhost:" + str(websocket_port) + " ws://127.0.0.1:" + str(websocket_port))
         self.send_header("Content-Security-Policy", (
             "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-" + self.server.style_nonce + "'; "
             "img-src 'self' data:; connect-src 'self' "
-            "ws://localhost:" + str(websocket_port) + " ws://127.0.0.1:" + str(websocket_port) + "; object-src 'none'; "
+            + connections + "; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         ))
         self.send_header("Connection", "close")
@@ -763,7 +809,22 @@ def main(argv=None):
     parser.add_argument("--set-password", action="store_true", help="Provision or reset the private local account, then exit.")
     parser.add_argument("--username", default="Nutcracker", help="Username for local password setup (default: Nutcracker).")
     parser.add_argument("--password-stdin", action="store_true", help="Read the setup password from standard input, never command arguments.")
+    parser.add_argument("--remote-origin", help="Exact approved HTTPS tunnel origin; all listeners stay on loopback.")
+    parser.add_argument("--set-remote-origin", help="Save the approved HTTPS origin in this Mac's private runtime, then exit.")
     args = parser.parse_args(argv)
+    if args.set_remote_origin:
+        origin = validate_remote_origin(args.set_remote_origin)
+        runtime = ROOT / ".runtime"
+        if runtime.is_symlink():
+            parser.error("The private runtime cannot be a symlink.")
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        file = runtime / "remote.json"
+        if file.is_symlink():
+            parser.error("The internet connection settings cannot be a symlink.")
+        file.write_text(json.dumps({"origin": origin}) + "\n", encoding="utf-8")
+        file.chmod(0o600)
+        print("Internet connection address saved. Restart the launcher.")
+        return 0
     if args.password_stdin and not args.set_password:
         parser.error("Use --password-stdin only with --set-password.")
     if args.set_password:
@@ -790,14 +851,25 @@ def main(argv=None):
         print(json.dumps(UTMCompanion().status(), indent=2, ensure_ascii=False))
         return 0
     try:
-        server = LocalServer(args.port)
+        origin = validate_remote_origin(args.remote_origin) if args.remote_origin else remote_settings(ROOT)
+        server = LocalServer(args.port, remote_origin=origin)
     except (OSError, CompanionError) as error:
         print("The local companion could not start: " + str(error), file=sys.stderr)
         print("Close an existing companion, or choose another --port.", file=sys.stderr)
         return 1
     url = "http://localhost:" + str(server.server_port)
+    gateway = None
+    if origin:
+        from remote_gateway import RemoteGateway
+        gateway = RemoteGateway(server.server_port, server.console.port, origin)
+        gateway.start()
+        if not gateway.running:
+            server.server_close()
+            print(gateway.error or "The internet gateway could not start.", file=sys.stderr)
+            return 1
     print("Nutcracker is ready at " + url, flush=True)
-    print("Private to this Mac. Press Control-C here to close the companion.", flush=True)
+    print("Internet sign-in: " + origin if origin else "Private to this Mac.", flush=True)
+    print("Press Control-C here to close the companion.", flush=True)
     print("UTM, Windows setup, and Steam compatibility require separate verification.", flush=True)
     if not args.no_browser:
         webbrowser.open(url)
@@ -806,6 +878,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\nNutcracker closed. Any running VM is still managed by UTM.")
     finally:
+        if gateway:
+            gateway.close()
         server.server_close()
     return 0
 
