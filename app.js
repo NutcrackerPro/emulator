@@ -8,7 +8,7 @@
     select: byId("vm-select"), start: byId("start-button"), shutdown: byId("shutdown-button"),
     hint: byId("machine-hint"), host: byId("host-description"), architecture: byId("host-architecture"),
     memory: byId("host-memory"), storage: byId("host-storage"), utm: byId("utm-status"), openUtm: byId("open-utm-button"),
-    console: byId("console-button"), consoleHint: byId("console-hint")
+    console: byId("console-button"), consoleHint: byId("console-hint"), logout: byId("logout-button")
   };
   const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
   const localHost = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
@@ -136,6 +136,10 @@
         options.body = JSON.stringify(body);
       }
       const response = await fetch(path, options);
+      if (response.status === 401) {
+        location.replace("/login.html");
+        throw new Error("Your session ended. Sign in again.");
+      }
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) throw new Error("The local launcher did not return a valid response.");
       const data = await response.json();
@@ -206,6 +210,16 @@
   }
 
   ui.refresh.addEventListener("click", () => refreshStatus());
+  ui.logout.addEventListener("click", async () => {
+    ui.logout.disabled = true;
+    try {
+      await request("/api/logout", {});
+      location.replace("/login.html");
+    } catch (error) {
+      showError(error.message || "Could not sign out. Try again.");
+      ui.logout.disabled = false;
+    }
+  });
   ui.select.addEventListener("change", () => { ui.notice.textContent = ""; updateControls(); });
   ui.start.addEventListener("click", () => {
     const vm = selectedVm();
