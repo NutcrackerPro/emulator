@@ -50,7 +50,7 @@ Configure only one VM with that socket name. Keep the relative filename: signed 
 
 The companion checks this one fixed socket; the browser cannot select arbitrary files or servers. UTM's [launch source](https://github.com/utmapp/UTM/blob/v4.7.5/Services/UTMQemuVirtualMachine.swift) sets that working directory. No sandbox, signature, or macOS security setting needs to be disabled.
 
-Use the display without GL because UTM's [QEMU SPICE GL context](https://github.com/utmapp/qemu/blob/v10.0.2-utm/ui/spice-display.c) accepts only its own GL display listener, which excludes VNC. UTM generates `gl=off` for the nongl display. The browser console carries display, keyboard, and mouse; **it provides no browser audio or added 3D acceleration**. The **Start menu** and **Run app** buttons send Windows shortcuts directly to the guest, avoiding Mac shortcut conflicts. UTM's own window remains available. Disconnecting the console leaves the VM running.
+Use the display without GL because UTM's [QEMU SPICE GL context](https://github.com/utmapp/qemu/blob/v10.0.2-utm/ui/spice-display.c) accepts only its own GL display listener, which excludes VNC. UTM generates `gl=off` for the nongl display. The browser console carries display, keyboard, and mouse; **it provides no browser audio or added 3D acceleration**. The **Start menu**, **Run app**, and **Ctrl + Alt + Del** buttons send Windows shortcuts directly to the guest. The **Fullscreen** button shows only the live Windows framebuffer, without the website toolbar, labels, or focus outline. The viewer requests keyboard capture when the browser supports it. Use Control for Windows shortcuts; macOS and the browser may still reserve some combinations. Hold Esc for two seconds or press **Ctrl + Alt + Shift + M** to leave fullscreen and release held guest modifiers. UTM's own window remains available. Disconnecting the console leaves the VM running.
 
 The actual setup tested is an M4 MacBook Air with 24 GB RAM, UTM 4.7.5, and a VM allocated 8 GB RAM, 4 CPU cores, and 80 GiB of virtual storage. Guest diagnostics report **Microsoft Windows 11 Home, version 10.0.26300, build 26300**. The display controller is **Red Hat VirtIO GPU DOD controller**, driver **22.7.38.43**. These observations do not establish a Windows release channel or usable 3D acceleration. See [VALIDATION.md](VALIDATION.md) for completed checks and pending game tests.
 
@@ -82,7 +82,7 @@ Blue Archive's [official Steam Deck support](https://forum.nexon.com/bluearchive
 
 ## Privacy
 
-- This repository was created as **private**. Keep it private.
+- This repository's source is **public**. The live Windows VM and its files stay on your Mac; no public remote-desktop endpoint is provided.
 - Both the dashboard and WebSocket display bridge bind only to `127.0.0.1`. They check Host and Origin headers; VM actions and console connections require a fresh per-run token. The bridge forwards binary display traffic only to the fixed UTM socket. Its parent directory must belong to your macOS user and deny access to other users; the companion tightens the owned socket to mode `0600` before connecting. This is not protection against software already running as your macOS user.
 - No external fonts, analytics, Steam login form, tracking, cloud subscription, or paid backend is included. Official download links lead to their vendors' websites. Steam and Windows themselves still use their own online services.
 - Windows disk images, ISO files, diagnostic reports, and secrets are excluded by `.gitignore`. Do not upload VM disks, Steam credentials, or licence keys manually; GitHub's browser uploader does not apply a local `.gitignore` file for you.
@@ -90,7 +90,13 @@ Blue Archive's [official Steam Deck support](https://forum.nexon.com/bluearchive
 
 ## Repository name and hosting
 
-The requested repository is `NutcrackerPro/nutcrackeremulator.github.io`. Its name is not an allocated `nutcrackeremulator.github.io` domain: GitHub user sites require the matching account name. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so it cannot run Windows or supply a gaming GPU. A private personal source repo does not automatically make a Pages website private. No Pages publishing is configured here.
+The project is `NutcrackerPro/nutcrackeremulator.github.io`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/nutcrackeremulator.github.io](https://nutcrackerpro.github.io/nutcrackeremulator.github.io/), published from the **main** branch's **/docs** folder. Its name does not allocate the separate `nutcrackeremulator.github.io` domain. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
+
+## Storage
+
+The VM's configured 80 GiB is its virtual capacity, not a preallocation of that entire amount on the Mac. Its real disk usage grows as Windows and apps write data. Keep the active VM disk, EFI/TPM data, the bundled noVNC client and notices, and `.runtime/python-deps`. The optional bundle builder downloads temporary build tools; those can be removed after the bundle is built. No VM copy or snapshot is needed for ordinary startup.
+
+Windows can return its already unused sectors with administrator PowerShell `Optimize-Volume -DriveLetter C -ReTrim`. The tested VM uses NVMe and QEMU `discard=unmap,detect-zeroes=unmap`. This preserves allocated files; exact host-space savings vary. Do not modify or compact the disk with a host image tool while the VM is running.
 
 ## Checks
 
