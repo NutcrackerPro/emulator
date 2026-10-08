@@ -2,11 +2,18 @@
 """Install only the browser-console dependency in this checkout's private runtime."""
 
 from pathlib import Path
+import argparse
 import subprocess
 import sys
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--with-remote", action="store_true", help="Also install the internet gateway dependency.")
+    args = parser.parse_args()
+    if args.with_remote and sys.version_info < (3, 10):
+        print("Internet access needs Python 3.10 or later for the patched networking library.", file=sys.stderr)
+        return 1
     if sys.version_info < (3, 9):
         print("The browser console needs Python 3.9 or later.", file=sys.stderr)
         return 1
@@ -30,6 +37,15 @@ def main():
     if result.returncode != 0:
         print("The console library could not be installed. Check your internet connection and retry.", file=sys.stderr)
         return result.returncode
+    if args.with_remote:
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-cache-dir", "--no-warn-script-location", "--only-binary=:all:",
+            "--target", str(dependencies), "-r", str(root / "requirements-remote.txt"),
+        ], shell=False, check=False)
+        if result.returncode != 0:
+            print("The internet gateway library could not be installed.", file=sys.stderr)
+            return result.returncode
     print("Console library ready. Restart Nutcracker to use the browser display.")
     return 0
 
