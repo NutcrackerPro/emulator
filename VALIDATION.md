@@ -30,7 +30,7 @@ Guest diagnostics report **Microsoft Windows 11 Home, version 10.0.26300, build 
 
 The official Steam installer was downloaded to `C:\Windows\Temp\NutcrackerSteamSetup.exe`. Authenticode reported **Valid**, with publisher **Valve Corp**. The normal interactive wizard completed installation in `C:\Program Files (x86)\Steam`. Steam then downloaded its client update and opened to its real sign-in screen in the browser. No account credentials were entered. Installer signature and client startup do not establish game compatibility.
 
-The browser's **Run app** shortcut opened Windows Run, and keyboard input launched the installer. The additional controls wrap at smaller viewport sizes.
+The browser's **Run app** shortcut opened Windows Run, and keyboard input launched the installer. The additional controls wrap at smaller viewport sizes. The current Fullscreen control targets only the live framebuffer. Its accessibility tree contains only the Windows display, with no website toolbar/statusbar, and the visible fullscreen view confirms that layout. Keyboard capture is requested where supported; host/browser-reserved combinations are not promised.
 
 These checks are **pending**, not passed:
 
@@ -44,3 +44,11 @@ The Windows PowerShell helper has been reviewed but has not been executed in Win
 The owner confirmed that no Windows licence is currently available and requested no purchases. Microsoft's [normal installation instructions](https://support.microsoft.com/en-us/windows/activation/activate-windows) allow a first installation to proceed with **I don't have a product key** and describe obtaining a licence afterward. That option does not supply a licence or establish permanently free Windows use. No activation bypass or purchase has been performed. Licence availability and activation remain unresolved separately from installation progress.
 
 When testing, record the date, UTM release, Windows release, guest graphics driver version, game version, and observed result here. Do not include account names, credentials, or Windows product keys.
+
+## Boot and cleanup
+
+The virtual installation-disc drives were removed after installation, preserving the existing NVMe Windows disk. The VM restarted from that disk and reached the installed Windows desktop. Closing and reopening the browser console reconnects to the existing VM.
+
+Known temporary bundle-build downloads/tools, duplicate unbundled source, obsolete setup screenshots, regenerable Python caches, our installer copies inside Windows, diagnostic probes, and obsolete configuration backups were removed. Owner-downloaded files and installed apps were preserved. Windows ReTrim completed successfully against already unused sectors. The active disk was measured at approximately **46.32 GiB physically allocated** after that operation; its guest volume contained approximately **51.51 GiB of used space**. The ReTrim report is not a claim that all reported trimmed bytes became new free host space.
+
+The public GitHub Pages launch page contains static HTML/CSS and an ordinary link to the localhost console. Local token, Host, Origin, and frame restrictions remain in place; the VM is not publicly exposed.
