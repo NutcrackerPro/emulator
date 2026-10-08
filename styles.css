@@ -17,3 +17,5 @@
 .console-display:fullscreen{position:relative;inset:auto;width:100vw;height:100vh;min-height:0;background:#000;outline:0;box-shadow:none;border:0;border-radius:0}
 .console-display:fullscreen:focus-visible{box-shadow:none;outline:0}
 .console-shortcut-help{font-size:10px;line-height:1.8;color:#8991a5;margin:12px 0 0}
+
+.account-actions{display:flex;align-items:center;gap:18px}.account-actions .button{font-size:12px;padding:8px 13px}@media(max-width:580px){.account-actions{gap:10px}.account-actions .local-badge{display:none}.console-header .account-actions .console-back-link{display:none}}
