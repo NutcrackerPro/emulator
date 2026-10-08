@@ -10,10 +10,13 @@ Requires macOS and Python 3.9 or later. In this downloaded repository folder, in
 
 ```sh
 python3 setup_console.py
+python3 nutcracker.py --set-password --username YOUR_NAME
 python3 nutcracker.py
 ```
 
 The setup helper installs the pinned `websockets==15.0.1` package only inside this checkout's ignored `.runtime/python-deps` folder. It needs an internet connection. The noVNC 1.7.0 browser library is already bundled locally; no Node.js installation or JavaScript build is needed to use it.
+
+The password setup prompts privately in your terminal and saves only a salted password hash inside the ignored `.runtime/auth.json`. The launcher requires an account before granting access to Windows. Never commit that file or put your password in website JavaScript.
 
 The companion opens a dashboard at `http://127.0.0.1:8765`. Keep the Terminal window open; press Control-C to stop the companion. This does not shut down the VM. The browser-display bridge listens separately on `127.0.0.1:8767`; close another Nutcracker session if that port is occupied. The dashboard port can be changed with `python3 nutcracker.py --port 8766`.
 
@@ -83,14 +86,14 @@ Blue Archive's [official Steam Deck support](https://forum.nexon.com/bluearchive
 ## Privacy
 
 - This repository's source is **public**. The live Windows VM and its files stay on your Mac; no public remote-desktop endpoint is provided.
-- Both the dashboard and WebSocket display bridge bind only to `127.0.0.1`. They check Host and Origin headers; VM actions and console connections require a fresh per-run token. The bridge forwards binary display traffic only to the fixed UTM socket. Its parent directory must belong to your macOS user and deny access to other users; the companion tightens the owned socket to mode `0600` before connecting. This is not protection against software already running as your macOS user.
+- Both the dashboard and WebSocket display bridge bind only to `127.0.0.1`. They check Host and Origin headers. Sign-in is verified by the local server, using a salted password hash. Protected pages, VM APIs, and the live display require an authenticated session. Cookies are HttpOnly and SameSite=Strict, expire after eight hours, and are invalidated on sign-out; signing out closes that session’s live display connection. VM actions and console connections also require a fresh per-run token. The bridge forwards binary display traffic only to the fixed UTM socket. Its parent directory must belong to your macOS user and deny access to other users; the companion tightens the owned socket to mode `0600` before connecting. This is not protection against software already running as your macOS user.
 - No external fonts, analytics, Steam login form, tracking, cloud subscription, or paid backend is included. Official download links lead to their vendors' websites. Steam and Windows themselves still use their own online services.
 - Windows disk images, ISO files, diagnostic reports, and secrets are excluded by `.gitignore`. Do not upload VM disks, Steam credentials, or licence keys manually; GitHub's browser uploader does not apply a local `.gitignore` file for you.
 - Starting the launcher never buys software, provisions a cloud computer, or installs Windows silently.
 
 ## Repository name and hosting
 
-The project is `NutcrackerPro/nutcrackeremulator.github.io`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/nutcrackeremulator.github.io](https://nutcrackerpro.github.io/nutcrackeremulator.github.io/), published from the **main** branch's **/docs** folder. Its name does not allocate the separate `nutcrackeremulator.github.io` domain. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
+The project is `NutcrackerPro/nutcrackeremulator.github.io`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/nutcrackeremulator.github.io](https://nutcrackerpro.github.io/nutcrackeremulator.github.io/), published from the **main** branch's **/docs** folder. Its name does not allocate the separate `nutcrackeremulator.github.io` domain. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your password-protected local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
 
 ## Storage
 
@@ -102,7 +105,7 @@ Windows can return its already unused sectors with administrator PowerShell `Opt
 
 ```sh
 python3 nutcracker.py --check
-python3 -m unittest -v test_nutcracker.py
+python3 -m unittest -v test_nutcracker.py test_auth.py
 ```
 
 Automated checks cover the companion, console bridge, and local access controls using mocked UTM responses and a test display server. They do not establish Windows boot or game compatibility.
