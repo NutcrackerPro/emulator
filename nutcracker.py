@@ -8,6 +8,10 @@ optional browser console uses the tested dependency in requirements.txt.
 """
 
 import argparse
+from collections import deque
+import getpass
+import hashlib
+from http.cookies import SimpleCookie, CookieError
 import http.server
 import json
 import os
@@ -16,9 +20,11 @@ import platform
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import uuid
 import webbrowser
@@ -29,6 +35,10 @@ from console_bridge import ConsoleBridge, DEFAULT_PORT as CONSOLE_PORT
 ROOT = Path(__file__).resolve().parent
 COMMAND_TIMEOUT = 15
 MAX_BODY_BYTES = 4096
+SESSION_COOKIE = "nutcracker_session"
+SESSION_SECONDS = 8 * 60 * 60
+PASSWORD_ITERATIONS = 600000
+NAVIGATION_PATHS = frozenset({"/", "/index.html", "/console.html", "/login", "/login.html"})
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 VM_ROW = re.compile(r"^(" + UUID_PATTERN + r")\s+(\S+)\s+(.*)$")
 VM_STATUSES = frozenset({
@@ -68,6 +78,216 @@ class CompanionError(Exception):
     def __init__(self, message, status=502):
         super().__init__(message)
         self.status = status
+
+
+class LocalAuth:
+    """One locally provisioned account; hashed credentials and opaque sessions.
+
+    Passwords never enter source, command arguments, logs, or session records.
+    Authentication remains mandatory even when the private record is missing.
+    """
+
+    def __init__(self, root=ROOT, clock=time.monotonic, load=True):
+        self.root = Path(root).resolve()
+        self.path = self.root / ".runtime" / "auth.json"
+        self.clock = clock
+        self.lock = threading.RLock()
+        self._verification = threading.Lock()
+        self._attempts = deque()
+        self._sessions = {}
+        self._listeners = []
+        self.record = None
+        if load:
+            self._load()
+
+    @property
+    def configured(self):
+        return self.record is not None
+
+    def _private_directory(self, create=False):
+        directory = self.path.parent
+        if directory.is_symlink():
+            raise CompanionError("The private sign-in directory cannot be a link.", 503)
+        if create:
+            directory.mkdir(mode=0o700, exist_ok=True)
+        if not directory.exists():
+            return False
+        info = directory.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise CompanionError("The private sign-in directory must belong to your Mac account.", 503)
+        if create:
+            directory.chmod(0o700)
+        elif stat.S_IMODE(info.st_mode) & 0o077:
+            raise CompanionError("Run password setup to make the local sign-in directory private.", 503)
+        return True
+
+    def _load(self):
+        # Runtime dependencies may exist before sign-in has been provisioned.
+        if not self.path.exists() and not self.path.is_symlink():
+            return
+        self._private_directory()
+        try:
+            descriptor = os.open(str(self.path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                    raise ValueError("private file required")
+                if info.st_size > MAX_BODY_BYTES:
+                    raise ValueError("oversized settings")
+                record = json.loads(handle.read(MAX_BODY_BYTES + 1).decode("utf-8"))
+            if set(record) != {"version", "username", "algorithm", "iterations", "salt", "hash"}:
+                raise ValueError("unexpected fields")
+            if type(record["version"]) is not int or record["version"] != 1:
+                raise ValueError("unexpected version")
+            if not isinstance(record["username"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", record["username"]):
+                raise ValueError("invalid username")
+            if record["algorithm"] != "pbkdf2-sha256" or type(record["iterations"]) is not int or record["iterations"] != PASSWORD_ITERATIONS:
+                raise ValueError("unexpected hash parameters")
+            for field in ("salt", "hash"):
+                if not isinstance(record[field], str) or not re.fullmatch(r"[0-9a-f]{64}", record[field]):
+                    raise ValueError("invalid hash")
+            self.record = record
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+            raise CompanionError("Local sign-in settings are unavailable. Run password setup again.", 503) from None
+
+    @staticmethod
+    def _password_bytes(password):
+        if not isinstance(password, str):
+            raise CompanionError("The sign-in request is invalid.", 400)
+        try:
+            encoded = password.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CompanionError("The sign-in request is invalid.", 400) from None
+        if len(encoded) > 1024:
+            raise CompanionError("The sign-in request is invalid.", 400)
+        return encoded
+
+    def configure(self, username, password):
+        if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
+            raise CompanionError("Use a username with letters, numbers, dots, underscores, or dashes.", 400)
+        encoded = self._password_bytes(password)
+        if len(password) < 8:
+            raise CompanionError("Use a password with at least eight characters.", 400)
+        self._private_directory(create=True)
+        if self.path.is_symlink():
+            raise CompanionError("The local sign-in file cannot be a link.", 503)
+        if self.path.exists():
+            info = self.path.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise CompanionError("The local sign-in file must belong to your Mac account.", 503)
+        salt = secrets.token_bytes(32)
+        record = {
+            "version": 1, "username": username, "algorithm": "pbkdf2-sha256",
+            "iterations": PASSWORD_ITERATIONS, "salt": salt.hex(),
+            "hash": hashlib.pbkdf2_hmac("sha256", encoded, salt, PASSWORD_ITERATIONS, dklen=32).hex(),
+        }
+        temporary = self.path.parent / (".auth-" + secrets.token_hex(16) + ".tmp")
+        try:
+            descriptor = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(record, handle)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(str(temporary), str(self.path))
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        self.record = record
+        self.invalidate_all()
+
+    def login(self, username, password):
+        if not self.configured:
+            raise CompanionError("Local sign-in needs password setup on this Mac.", 503)
+        encoded = self._password_bytes(password)
+        if not isinstance(username, str) or len(username) > 128:
+            raise CompanionError("The sign-in request is invalid.", 400)
+        try:
+            username_bytes = username.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CompanionError("The sign-in request is invalid.", 400) from None
+        now = self.clock()
+        with self.lock:
+            while self._attempts and self._attempts[0] <= now - 60:
+                self._attempts.popleft()
+            if len(self._attempts) >= 5:
+                raise CompanionError("Sign-in is temporarily unavailable. Try again in one minute.", 429)
+            if not self._verification.acquire(blocking=False):
+                raise CompanionError("Sign-in is temporarily unavailable. Try again in one minute.", 429)
+            self._attempts.append(now)
+        try:
+            digest = hashlib.pbkdf2_hmac("sha256", encoded, bytes.fromhex(self.record["salt"]), PASSWORD_ITERATIONS, dklen=32)
+            valid_password = secrets.compare_digest(digest, bytes.fromhex(self.record["hash"]))
+            valid_username = secrets.compare_digest(username_bytes, self.record["username"].encode("ascii"))
+            if not (valid_password and valid_username):
+                raise CompanionError("Username or password is incorrect.", 401)
+            with self.lock:
+                self._attempts.clear()
+                expired = [key for key, deadline in self._sessions.items() if deadline <= self.clock()]
+                for key in expired:
+                    self._sessions.pop(key, None)
+                evicted = None
+                if len(self._sessions) >= 8:
+                    evicted = next(iter(self._sessions))
+                    self._sessions.pop(evicted)
+                session = secrets.token_urlsafe(32)
+                self._sessions[session] = self.clock() + SESSION_SECONDS
+            if evicted:
+                self._notify(evicted)
+            return session
+        finally:
+            self._verification.release()
+
+    def session_from_cookie(self, value):
+        if not isinstance(value, str) or len(value) > MAX_BODY_BYTES:
+            return None
+        if sum(part.strip().partition("=")[0] == SESSION_COOKIE for part in value.split(";")) != 1:
+            return None
+        try:
+            cookie = SimpleCookie()
+            cookie.load(value)
+            session = cookie[SESSION_COOKIE].value
+        except (CookieError, KeyError):
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", session) or not self.is_valid(session):
+            return None
+        return session
+
+    def is_valid(self, session):
+        with self.lock:
+            deadline = self._sessions.get(session)
+            return deadline is not None and deadline > self.clock()
+
+    def run_if_valid(self, session, callback):
+        # A logout in another HTTP thread cannot interleave with forwarding an
+        # already queued key or pointer message into the VM.
+        with self.lock:
+            if not self.is_valid(session):
+                return False
+            callback()
+            return True
+
+    def add_revocation_listener(self, callback):
+        with self.lock:
+            self._listeners.append(callback)
+
+    def _notify(self, session):
+        with self.lock:
+            callbacks = list(self._listeners)
+        for callback in callbacks:
+            callback(session)
+
+    def invalidate(self, session):
+        with self.lock:
+            self._sessions.pop(session, None)
+        self._notify(session)
+
+    def invalidate_all(self):
+        with self.lock:
+            sessions = list(self._sessions)
+            self._sessions.clear()
+        for session in sessions:
+            self._notify(session)
 
 
 def validate_vm_id(value):
@@ -257,13 +477,16 @@ class UTMCompanion:
 class LocalServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=8765, root=ROOT, companion=None, console=None, console_port=CONSOLE_PORT, console_socket=None):
+    def __init__(self, port=8765, root=ROOT, companion=None, console=None, console_port=CONSOLE_PORT, console_socket=None, auth=None):
         # The bind address is deliberately fixed and has no configurable override.
         self.root = Path(root).resolve()
         self.companion = companion or UTMCompanion(self.root)
+        self.auth = auth if auth is not None else LocalAuth(self.root)
         self.token = secrets.token_urlsafe(32)
+        self.login_token = secrets.token_urlsafe(32)
+        self.style_nonce = secrets.token_urlsafe(24)
         super().__init__(("127.0.0.1", port), RequestHandler)
-        self.console = console or ConsoleBridge(self.server_port, self.token, port=console_port, unix_socket=console_socket)
+        self.console = console or ConsoleBridge(self.server_port, self.token, port=console_port, unix_socket=console_socket, auth=self.auth)
         self.console.start()
 
     def server_close(self):
@@ -291,7 +514,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             raise CompanionError("Duplicate request headers are not supported.", 400)
         return values[0] if values else None
 
-    def _guard(self, mutation=False):
+    def _guard(self, mutation=False, login=False):
         host = self._header("Host")
         port = self.server.server_port
         if host not in {"127.0.0.1:" + str(port), "localhost:" + str(port)}:
@@ -301,11 +524,29 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             raise CompanionError("Open the companion directly in your local browser.", 403)
         fetch_site = self._header("Sec-Fetch-Site")
         if fetch_site not in {None, "none", "same-origin"}:
+            # A public launch-page link may open this one local sign-in entry.
+            # Never return authenticated content to its cross-site navigation,
+            # even if a client happens to attach a cookie. Fetches, frames,
+            # mutations, and every API/asset retain the strict origin boundary.
+            if (not mutation and self.command in {"GET", "HEAD"} and fetch_site == "cross-site"
+                    and origin is None and self._path() in NAVIGATION_PATHS
+                    and self._header("Sec-Fetch-Mode") == "navigate"
+                    and self._header("Sec-Fetch-Dest") == "document"
+                    and self._header("Sec-Fetch-User") == "?1"):
+                return True
             raise CompanionError("Requests from other sites are blocked.", 403)
         if mutation:
             token = self._header("X-Nutcracker-Token") or ""
-            if not secrets.compare_digest(token.encode("utf-8"), self.server.token.encode("ascii")):
+            expected = self.server.login_token if login else self.server.token
+            if not secrets.compare_digest(token.encode("utf-8"), expected.encode("ascii")):
                 raise CompanionError("The local session expired. Reload this page and retry.", 403)
+        return False
+
+    def _session(self, required=False):
+        session = self.server.auth.session_from_cookie(self._header("Cookie"))
+        if required and session is None:
+            raise CompanionError("Sign in to your local Nutcracker account.", 401)
+        return session
 
     def _path(self):
         parsed = urllib.parse.urlsplit(self.path)
@@ -313,7 +554,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             raise CompanionError("Use a relative local request path.", 400)
         return parsed.path
 
-    def _send(self, status, body, content_type="application/json; charset=utf-8", download=False):
+    def _send(self, status, body, content_type="application/json; charset=utf-8", download=False, cookie=None, location=None):
         self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -323,9 +564,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
+        if location is not None:
+            self.send_header("Location", location)
+        if status == 429:
+            self.send_header("Retry-After", "60")
         websocket_port = self.server.console.port
         self.send_header("Content-Security-Policy", (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-" + self.server.style_nonce + "'; "
             "img-src 'self' data:; connect-src 'self' "
             "ws://localhost:" + str(websocket_port) + " ws://127.0.0.1:" + str(websocket_port) + "; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
@@ -337,8 +584,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _json(self, status, value):
-        self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    def _json(self, status, value, cookie=None):
+        self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), cookie=cookie)
 
     def _error(self, error):
         self._json(error.status, {"ok": False, "error": str(error)})
@@ -398,8 +645,39 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            self._guard()
+            external_navigation = self._guard()
             path = self._path()
+            if external_navigation and path not in {"/login", "/login.html"}:
+                destination = "/console.html" if path == "/console.html" else "/index.html"
+                self._send(303, b"", location="/login.html?next=" + urllib.parse.quote(destination, safe=""))
+                return
+            if path == "/api/auth":
+                session = self._session()
+                result = {"authenticated": session is not None, "configured": self.server.auth.configured}
+                if session is not None:
+                    result.update({"username": self.server.auth.record["username"], "token": self.server.token})
+                self._json(200, result)
+                return
+            if path in {"/login", "/login.html", "/login.js"}:
+                filename = "login.js" if path == "/login.js" else "login.html"
+                file = self.server.root / filename
+                if file.is_symlink() or not file.is_file() or file.resolve().parent != self.server.root:
+                    raise CompanionError("The local sign-in page is missing.", 503)
+                try:
+                    body = file.read_bytes()
+                except OSError:
+                    raise CompanionError("The local sign-in page could not be read.", 503) from None
+                if filename == "login.html":
+                    body = body.replace(b"__NUTCRACKER_LOGIN_TOKEN__", self.server.login_token.encode("ascii"))
+                    body = body.replace(b"__NUTCRACKER_STYLE_NONCE__", self.server.style_nonce.encode("ascii"))
+                self._send(200, body, "text/javascript; charset=utf-8" if filename.endswith(".js") else "text/html; charset=utf-8")
+                return
+            if self._session() is None:
+                if path in {"/", "/index.html", "/console.html"}:
+                    destination = "/console.html" if path == "/console.html" else "/index.html"
+                    self._send(303, b"", location="/login.html?next=" + urllib.parse.quote(destination, safe=""))
+                    return
+                raise CompanionError("Sign in to your local Nutcracker account.", 401)
             if path == "/api/status":
                 self._json(200, self.server.companion.status())
                 return
@@ -431,8 +709,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            self._guard(mutation=True)
             path = self._path()
+            self._guard(mutation=True, login=path == "/api/login")
+            if path == "/api/login":
+                body = self._read_json()
+                if set(body) != {"username", "password"}:
+                    raise CompanionError("The sign-in request is invalid.", 400)
+                session = self.server.auth.login(body["username"], body["password"])
+                cookie = SESSION_COOKIE + "=" + session + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=" + str(SESSION_SECONDS)
+                self._json(200, {"ok": True}, cookie=cookie)
+                return
+            session = self._session(required=True)
+            if path == "/api/logout":
+                if self._read_json(allow_empty=True):
+                    raise CompanionError("Signing out takes no request options.", 400)
+                self.server.auth.invalidate(session)
+                self._json(200, {"ok": True}, cookie=SESSION_COOKIE + "=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+                return
             if path == "/api/open-utm":
                 if self._read_json(allow_empty=True):
                     raise CompanionError("Opening UTM takes no request options.", 400)
@@ -467,7 +760,30 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8765, help="Local browser port (default: 8765).")
     parser.add_argument("--check", action="store_true", help="Print actual host and UTM status, then exit.")
     parser.add_argument("--no-browser", action="store_true", help="Run without opening the browser.")
+    parser.add_argument("--set-password", action="store_true", help="Provision or reset the private local account, then exit.")
+    parser.add_argument("--username", default="Nutcracker", help="Username for local password setup (default: Nutcracker).")
+    parser.add_argument("--password-stdin", action="store_true", help="Read the setup password from standard input, never command arguments.")
     args = parser.parse_args(argv)
+    if args.password_stdin and not args.set_password:
+        parser.error("Use --password-stdin only with --set-password.")
+    if args.set_password:
+        try:
+            if args.password_stdin:
+                raw = sys.stdin.buffer.read(1027)
+                if len(raw) > 1026:
+                    raise CompanionError("The setup password is too long.", 400)
+                password = raw.decode("utf-8").rstrip("\r\n")
+            else:
+                password = getpass.getpass("New local password: ")
+                confirmation = getpass.getpass("Confirm local password: ")
+                if not secrets.compare_digest(password.encode("utf-8"), confirmation.encode("utf-8")):
+                    raise CompanionError("The passwords did not match.", 400)
+            LocalAuth(ROOT, load=False).configure(args.username, password)
+        except (CompanionError, OSError, UnicodeError) as error:
+            print(str(error) if isinstance(error, CompanionError) else "Local password setup could not be completed.", file=sys.stderr)
+            return 1
+        print("Local sign-in configured. Restart Nutcracker to use it.")
+        return 0
     if not 1 <= args.port <= 65535:
         parser.error("Choose a port between 1 and 65535.")
     if args.check:
@@ -475,7 +791,7 @@ def main(argv=None):
         return 0
     try:
         server = LocalServer(args.port)
-    except OSError as error:
+    except (OSError, CompanionError) as error:
         print("The local companion could not start: " + str(error), file=sys.stderr)
         print("Close an existing companion, or choose another --port.", file=sys.stderr)
         return 1
