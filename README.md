@@ -2,7 +2,7 @@
 
 A private dashboard and browser display for a real Windows virtual machine on an Apple Silicon Mac. **UTM** runs the VM on your Mac; a local companion connects its screen, keyboard, and mouse to the browser using **noVNC**. This project does not contain Windows, a Windows licence, or a replacement for UTM's virtualization engine.
 
-**Current status:** Windows 11 Home is installed and running in the private browser console. The real desktop, internet access, keyboard, mouse, fullscreen, and display continuity through restarts have been verified. Valve's official installer was signature-checked, Steam is installed, and its updated client has opened to the sign-in screen. Owner login and Blue Archive gameplay remain pending. No purchases have been made or Windows licence supplied. Windows licensing remains separate.
+**Current status:** Windows 11 Home is installed and running in the private browser console. The real desktop, internet access, keyboard, mouse, fullscreen, and display continuity through restarts have been verified. Valve's official installer was signature-checked, Steam is installed, and its updated client has opened to the sign-in screen. Blue Archive gameplay remains unverified. No purchases have been made or Windows licence supplied. Windows licensing remains separate.
 
 ## Start the private launcher
 
@@ -26,7 +26,7 @@ To use the double-click launcher after downloading from GitHub, first make it ex
 chmod +x "Launch Nutcracker.command"
 ```
 
-Then double-click **Launch Nutcracker.command** in Finder. The dashboard and console work only while the local companion runs. Opening `index.html` or publishing it on GitHub Pages does not start a Windows computer.
+Then double-click **Launch Nutcracker.command** in Finder. The dashboard and console work only while the Mac companion runs. Opening `index.html` or publishing it on GitHub Pages does not start a Windows computer.
 
 ## Create the Windows machine
 
@@ -85,15 +85,15 @@ Blue Archive's [official Steam Deck support](https://forum.nexon.com/bluearchive
 
 ## Privacy
 
-- This repository's source is **public**. The live Windows VM and its files stay on your Mac; no public remote-desktop endpoint is provided.
+- This repository's source is **public**. The live Windows VM and its files stay on your Mac. The optional internet connector exposes only the password-protected console.
 - Both the dashboard and WebSocket display bridge bind only to `127.0.0.1`. They check Host and Origin headers. Sign-in is verified by the local server, using a salted password hash. Protected pages, VM APIs, and the live display require an authenticated session. Cookies are HttpOnly and SameSite=Strict, expire after eight hours, and are invalidated on sign-out; signing out closes that session’s live display connection. VM actions and console connections also require a fresh per-run token. The bridge forwards binary display traffic only to the fixed UTM socket. Its parent directory must belong to your macOS user and deny access to other users; the companion tightens the owned socket to mode `0600` before connecting. This is not protection against software already running as your macOS user.
-- No external fonts, analytics, Steam login form, tracking, cloud subscription, or paid backend is included. Official download links lead to their vendors' websites. Steam and Windows themselves still use their own online services.
+- The frontend includes no external fonts, analytics, Steam login form, tracking, or paid backend. The optional Tailscale connector uses your free account and network metadata to provide internet access. Official download links lead to their vendors' websites. Steam and Windows themselves still use their own online services.
 - Windows disk images, ISO files, diagnostic reports, and secrets are excluded by `.gitignore`. Do not upload VM disks, Steam credentials, or licence keys manually; GitHub's browser uploader does not apply a local `.gitignore` file for you.
 - Starting the launcher never buys software, provisions a cloud computer, or installs Windows silently.
 
 ## Repository name and hosting
 
-The project is `NutcrackerPro/emulator`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/emulator](https://nutcrackerpro.github.io/emulator/), published from the **main** branch's **/docs** folder. This emulator is a separate project page from the owner’s portfolio at `https://nutcrackerpro.github.io/`. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your password-protected local console; it does not fetch local APIs, embed the VM, transmit a session token, or gain remote access to your Mac.
+The project is `NutcrackerPro/emulator`. Its GitHub Pages launch page is at [nutcrackerpro.github.io/emulator](https://nutcrackerpro.github.io/emulator/), published from the **main** branch's **/docs** folder. This emulator is a separate project page from the owner’s portfolio at `https://nutcrackerpro.github.io/`. [GitHub Pages is static hosting](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), so your Mac still runs Windows. The public page uses an ordinary navigation link to your password-protected console. With the optional HTTPS internet connector, other devices can reach the same Windows machine while your Mac hosts it.
 
 ## Storage
 
@@ -105,9 +105,25 @@ Windows can return its already unused sectors with administrator PowerShell `Opt
 
 ```sh
 python3 nutcracker.py --check
-python3 -m unittest -v test_nutcracker.py test_auth.py
+python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py
 ```
 
 Automated checks cover the companion, console bridge, and local access controls using mocked UTM responses and a test display server. They do not establish Windows boot or game compatibility.
 
 `vendor/novnc/rfb.bundle.js` contains the locally bundled noVNC 1.7.0 runtime. Its [third-party notices](vendor/novnc/NOTICES.txt) retain upstream licences and copyright notices and identify the exact corresponding source. `build-novnc.py` is an optional developer tool for rebuilding that bundle from verified upstream source with esbuild 0.28.2; it is not part of normal startup.
+
+## Open Windows from another device
+
+A free Tailscale Personal account and Funnel provide a stable HTTPS address for this Mac. Other devices only need a browser; they do not install Tailscale. The public GitHub page links to the protected console. GitHub hosts the launch page; Windows and its files remain on your Mac.
+
+The internet connector uses userspace networking and leaves macOS VPN configuration unchanged. All Nutcracker listeners bind to loopback. A single gateway on `127.0.0.1:8768` forwards only to the fixed page and display ports. The exact HTTPS Host and Origin must match the configured address. Remote sign-in has Secure, HttpOnly, SameSite=Strict cookies; console connections require that session and the per-run token. Password hashes, connector state, and certificates stay in ignored `.runtime`.
+
+Internet access requires Python 3.10 or later for the patched networking library. Install the gateway dependencies with `python3 setup_console.py --with-remote`. Install Tailscale from its [official macOS instructions](https://github.com/tailscale/tailscale/wiki/Tailscaled-on-macOS) or supported Homebrew package. The configured Mac keeps its verified CLI binaries in `.runtime/tailscale`. Sign in and enable Funnel yourself, then save the exact assigned address with `python3 nutcracker.py --set-remote-origin https://YOUR-DEVICE.YOUR-TAILNET.ts.net`. Update the public page's Windows link to that address.
+
+Double-click **Launch Nutcracker.command** to restart the saved connection and launcher. Keep this Mac connected to the internet with its lid open. The launcher prevents idle sleep while hosting; closing it restores normal sleep. Funnel is a beta service with bandwidth limits, so remote graphics and input speed depend on both internet connections. See [Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel) and [free Personal plan](https://tailscale.com/pricing).
+
+## Clearer display
+
+**Native pixels (sharp)** displays each Windows pixel without shrinking or enlarging it. If the desktop is larger than the viewer, use the arrow controls or scrollbars, or open fullscreen. **Fit display** shows the whole desktop in the available space and defaults on narrow screens. The viewer requests the highest image quality; these controls do not add GPU acceleration or change Windows resolution.
+
+Verify networking without operating a real VM: `python3 -B -m unittest -q test_nutcracker.py test_auth.py test_remote_auth.py test_remote_gateway.py`.
