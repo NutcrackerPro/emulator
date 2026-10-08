@@ -5,7 +5,7 @@ const ui = Object.fromEntries([
   "console-status", "console-error", "connect-button", "focus-button", "fullscreen-button",
   "disconnect-button", "console-display", "console-empty", "console-empty-title", "console-detail",
   "console-surface", "credentials-form", "vnc-password", "start-menu-button", "run-app-button",
-  "shortcut-status", "ctrl-alt-del-button"
+  "shortcut-status", "ctrl-alt-del-button", "logout-button"
 ].map((id) => [id, document.getElementById(id)]));
 const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
 const isLocalLauncher = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname)
@@ -105,6 +105,10 @@ async function connect() {
   const requestTimer = setTimeout(() => controller.abort(), 25000);
   try {
     const response = await fetch("/api/console", { credentials: "same-origin", cache: "no-store", signal: controller.signal });
+    if (response.status === 401) {
+      location.replace("/login.html");
+      throw new Error("Your session ended. Sign in again.");
+    }
     if (!(response.headers.get("content-type") || "").includes("application/json")) throw new Error("The local launcher did not return a console status.");
     const data = await response.json();
     if (!response.ok || data?.available !== true || data.transport !== "vnc") {
@@ -231,6 +235,26 @@ ui["disconnect-button"].addEventListener("click", () => {
   releaseGuestKeys();
   leaveFullscreen();
   client.disconnect();
+});
+ui["logout-button"].addEventListener("click", async () => {
+  ui["logout-button"].disabled = true;
+  releaseGuestKeys();
+  await leaveFullscreen();
+  if (client) {
+    intentionalDisconnect = true;
+    client.disconnect();
+  }
+  try {
+    const response = await fetch("/api/logout", {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Nutcracker-Token": token }, body: "{}"
+    });
+    if (!response.ok && response.status !== 401) throw new Error("Could not sign out. Try again.");
+    location.replace("/login.html");
+  } catch (failure) {
+    error(failure.message || "Could not sign out. Try again.");
+    ui["logout-button"].disabled = false;
+  }
 });
 ui["fullscreen-button"].addEventListener("click", async () => {
   if (!connected || !document.fullscreenEnabled) return;
