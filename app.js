@@ -7,7 +7,8 @@
     notice: byId("action-notice"), state: byId("machine-state"), description: byId("machine-description"),
     select: byId("vm-select"), start: byId("start-button"), shutdown: byId("shutdown-button"),
     hint: byId("machine-hint"), host: byId("host-description"), architecture: byId("host-architecture"),
-    memory: byId("host-memory"), storage: byId("host-storage"), utm: byId("utm-status"), openUtm: byId("open-utm-button")
+    memory: byId("host-memory"), storage: byId("host-storage"), utm: byId("utm-status"), openUtm: byId("open-utm-button"),
+    console: byId("console-button"), consoleHint: byId("console-hint")
   };
   const token = document.querySelector('meta[name="nutcracker-token"]')?.content || "";
   const localHost = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
@@ -15,6 +16,7 @@
   let snapshot = null;
   let busy = false;
   let connected = false;
+  let consoleAvailable = false;
   const labels = {
     stopped: "Stopped", started: "Running", running: "Running", starting: "Starting", pausing: "Pausing",
     paused: "Paused", resuming: "Resuming", stopping: "Shutting down", unknown: "Unknown"
@@ -44,6 +46,7 @@
     ui.start.disabled = !connected || busy || !snapshot?.utm_installed || !vm || vm.status !== "stopped";
     ui.shutdown.disabled = !connected || busy || !snapshot?.utm_installed || !vm || !["started", "running", "paused"].includes(vm.status);
     ui.openUtm.disabled = !connected || busy || !snapshot?.utm_installed;
+    ui.console.disabled = !connected || busy || !consoleAvailable;
     ui.refresh.setAttribute("aria-busy", String(busy));
     if (!connected) return;
     if (!snapshot.utm_installed) {
@@ -107,10 +110,12 @@
   function setOffline() {
     connected = false;
     snapshot = null;
+    consoleAvailable = false;
+    ui.consoleHint.textContent = "Connect the local launcher to check the live browser console.";
     ui.offline.hidden = false;
     setMachineState("Offline");
     ui.description.textContent = "Connect the local launcher to see your Windows VMs.";
-    ui.hint.textContent = "Windows opens in UTM. Steam runs inside your Windows VM.";
+    ui.hint.textContent = "Open the live Windows screen in your browser after starting the configured VM.";
     ui.select.replaceChildren(new Option("Local launcher offline", ""));
     ui.host.textContent = "Host details appear when connected.";
     ui.architecture.textContent = "—";
@@ -154,6 +159,7 @@
       if (!data || !data.host || typeof data.utm_installed !== "boolean" || !Array.isArray(data.vms)) throw new Error("The local launcher returned an incomplete status. Restart the launcher and try again.");
       if (data.vms.some((vm) => !vm || typeof vm.id !== "string" || typeof vm.name !== "string" || typeof vm.status !== "string")) throw new Error("The local launcher returned an invalid VM list. Check UTM and refresh status.");
       renderStatus(data);
+      await refreshConsoleAvailability();
       if (!quiet) ui.notice.textContent = "Status refreshed from your Mac.";
     } catch (error) {
       setOffline();
@@ -163,6 +169,20 @@
       busy = false;
       updateControls();
     }
+  }
+
+  async function refreshConsoleAvailability() {
+    consoleAvailable = false;
+    try {
+      const data = await request("/api/console");
+      consoleAvailable = data?.available === true && data.transport === "vnc" && typeof data.url === "string";
+      ui.consoleHint.textContent = consoleAvailable
+        ? "Live display of the configured VM. No audio. Browser access does not confirm Steam compatibility."
+        : typeof data?.error === "string" ? data.error : "Browser console unavailable. Start the configured VM, then refresh status.";
+    } catch (error) {
+      ui.consoleHint.textContent = "Browser console unavailable. Check the local launcher and refresh status.";
+    }
+    updateControls();
   }
 
   async function performAction(path, body, progress) {
@@ -197,6 +217,9 @@
   });
   ui.openUtm.addEventListener("click", () => {
     if (!ui.openUtm.disabled) performAction("/api/open-utm", {}, "Opening UTM on your Mac…");
+  });
+  ui.console.addEventListener("click", () => {
+    if (!ui.console.disabled) location.assign("console.html");
   });
 
   const navLinks = [...document.querySelectorAll(".nav-link")];
