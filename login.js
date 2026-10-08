@@ -25,8 +25,8 @@ async function readResponse(response) {
 }
 
 async function checkSignIn() {
-  if (!["localhost", "127.0.0.1"].includes(location.hostname) || location.protocol !== "http:"
-      || !loginToken || loginToken === "__NUTCRACKER_LOGIN_TOKEN__") {
+  if (!((location.protocol === "http:" && ["localhost", "127.0.0.1"].includes(location.hostname))
+      || location.protocol === "https:") || !loginToken || loginToken === "__NUTCRACKER_LOGIN_TOKEN__") {
     showError("Open the private Nutcracker launcher on your Mac to sign in.");
     return;
   }
