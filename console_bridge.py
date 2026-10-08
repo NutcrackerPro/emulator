@@ -53,10 +53,12 @@ class ConsoleUnavailable(Exception):
 
 
 class ConsoleBridge:
-    def __init__(self, page_port, token, port=DEFAULT_PORT, unix_socket=None, auth=None):
+    def __init__(self, page_port, token, port=DEFAULT_PORT, unix_socket=None, auth=None, remote_origin=None):
         self.page_port = page_port
         self.token = token
         self.auth = auth
+        self.remote_origin = remote_origin
+        self.remote_host = urllib.parse.urlsplit(remote_origin).netloc if remote_origin else None
         self.port = port
         self.unix_socket = Path(unix_socket) if unix_socket is not None else default_socket()
         self.error = None
@@ -77,7 +79,7 @@ class ConsoleBridge:
 
     @property
     def origins(self):
-        return ["http://localhost:" + str(self.page_port), "http://127.0.0.1:" + str(self.page_port)]
+        return ["http://localhost:" + str(self.page_port), "http://127.0.0.1:" + str(self.page_port)] + ([self.remote_origin] if self.remote_origin else [])
 
     def start(self):
         try:
@@ -163,8 +165,12 @@ class ConsoleBridge:
         host = self._single_header(request.headers, "Host")
         origin = self._single_header(request.headers, "Origin")
         allowed_hosts = {"localhost:" + str(self.port), "127.0.0.1:" + str(self.port)}
+        if self.remote_host:
+            allowed_hosts.add(self.remote_host)
         if host not in allowed_hosts or origin not in self.origins:
             return connection.respond(403, "Open the private console from the Nutcracker page on this Mac.\n")
+        if (host == self.remote_host) != (origin == self.remote_origin):
+            return connection.respond(403, "The console origin does not match its address.\n")
         fetch_values = request.headers.get_all("Sec-Fetch-Site")
         # A separate local port makes browser WebSocket requests same-site.
         # Exact Origin checking above is authoritative; remote origins cannot
@@ -242,7 +248,7 @@ class ConsoleBridge:
         if not self.running:
             result["error"] = self.error or "The private browser console is not running. Restart Nutcracker."
             return result
-        if hostname not in {"localhost", "127.0.0.1"}:
+        if hostname not in {"localhost", "127.0.0.1", self.remote_host}:
             result["error"] = "The private browser console accepts local requests only."
             return result
         try:
@@ -251,7 +257,7 @@ class ConsoleBridge:
             result["error"] = str(error)
             return result
         result["available"] = True
-        result["url"] = "ws://" + hostname + ":" + str(self.port) + "/websockify?token=" + self.token
+        result["url"] = (("wss://" + self.remote_host) if hostname == self.remote_host else "ws://" + hostname + ":" + str(self.port)) + "/websockify?token=" + self.token
         return result
 
     async def _forward(self, websocket):
