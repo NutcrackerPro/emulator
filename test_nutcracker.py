@@ -246,12 +246,17 @@ class LiveHTTPTests(unittest.TestCase):
         (cls.root / "steam-setup.ps1").write_text("Write-Host 'Setup'", encoding="utf-8")
         (cls.root / "console.html").write_text('<meta name="nutcracker-token" content="__NUTCRACKER_TOKEN__">', encoding="utf-8")
         (cls.root / "console.js").write_text("'use strict';", encoding="utf-8")
+        (cls.root / "login.html").write_text('<meta name="nutcracker-login-token" content="__NUTCRACKER_LOGIN_TOKEN__"><style nonce="__NUTCRACKER_STYLE_NONCE__"></style>', encoding="utf-8")
+        (cls.root / "login.js").write_text("'use strict';", encoding="utf-8")
         (cls.root / "vendor/novnc/core").mkdir(parents=True)
         (cls.root / "vendor/novnc/core/rfb.js").write_text("export default class RFB {}", encoding="utf-8")
         (cls.root / "vendor/novnc/LICENSE.txt").write_text("Public vendor license", encoding="utf-8")
         (cls.root / "secret.txt").write_text("private-fixture-content-321", encoding="utf-8")
         cls.fake = FakeCompanion()
+        auth = nutcracker.LocalAuth(cls.root)
+        auth.configure("FixtureUser", "fixture-only-password")
         cls.server = nutcracker.LocalServer(port=0, root=cls.root, companion=cls.fake, console=FakeConsole())
+        cls.cookie = nutcracker.SESSION_COOKIE + "=" + cls.server.auth.login("FixtureUser", "fixture-only-password")
         cls.host = "127.0.0.1:" + str(cls.server.server_port)
         cls.origin = "http://" + cls.host
         cls.thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
@@ -272,7 +277,9 @@ class LiveHTTPTests(unittest.TestCase):
     def request(self, method="GET", path="/api/status", body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
-            connection.request(method, path, body=body, headers=headers or {})
+            request_headers = {"Cookie": self.cookie}
+            request_headers.update(headers or {})
+            connection.request(method, path, body=body, headers=request_headers)
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -449,6 +456,36 @@ class LiveHTTPTests(unittest.TestCase):
             connection.close()
         self.assertEqual(self.fake.status_reads, 0)
 
+    def test_public_page_user_navigation_enters_login_without_vm_token(self):
+        headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", "Sec-Fetch-User": "?1"}
+        for method in ("GET", "HEAD"):
+            status, response_headers, body = self.request(method, "/console.html", headers=headers)
+            self.assertEqual(status, 303)
+            self.assertEqual(response_headers["Location"], "/login.html?next=%2Fconsole.html")
+            self.assertNotIn(self.server.token.encode(), body)
+        status, _, body = self.request(path="/login.html?next=%2Fconsole.html", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertIn(self.server.login_token.encode(), body)
+        self.assertNotIn(self.server.token.encode(), body)
+        self.assertEqual(self.fake.status_reads, 0)
+
+    def test_public_entry_exception_does_not_allow_iframes_fetches_or_apis(self):
+        navigation = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", "Sec-Fetch-User": "?1"}
+        for path, overrides in (("/api/status", {}), ("/api/console", {}), ("/app.js", {}),
+                                ("/login.js", {}), ("/login.html", {"Sec-Fetch-Dest": "iframe"}),
+                                ("/console.html", {"Sec-Fetch-Mode": "cors"}),
+                                ("/console.html", {"Sec-Fetch-User": ""}),
+                                ("/console.html", {"Origin": "https://nutcrackerpro.github.io"}),
+                                ("/console.html", {"Host": "evil.example"})):
+            with self.subTest(path=path, overrides=overrides):
+                headers = {**navigation, **overrides}
+                status, _, body = self.request(path=path, headers=headers)
+                self.assertEqual(status, 403)
+                self.assertNotIn(self.server.token.encode(), body)
+        status, _, _ = self.request("POST", "/api/login", "{}", {**navigation, **self.action_headers()})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.fake.status_reads, 0)
+
 
 class MockRFBServer:
     """A tiny upstream RFB handshake fixture, never a simulated user desktop."""
@@ -548,6 +585,8 @@ class LiveConsoleTests(unittest.TestCase):
         cls.root.chmod(0o700)
         cls.target = cls.root / "rfb.sock"
         cls.rfb = MockRFBServer(cls.target)
+        auth = nutcracker.LocalAuth(cls.root)
+        auth.configure("FixtureUser", "fixture-only-password")
         cls.server = nutcracker.LocalServer(
             port=0, root=cls.root, companion=FakeCompanion(), console_port=0, console_socket=cls.target,
         )
@@ -557,6 +596,7 @@ class LiveConsoleTests(unittest.TestCase):
         cls.origin = "http://127.0.0.1:" + str(cls.server.server_port)
         cls.ws_host = "127.0.0.1:" + str(cls.bridge.port)
         cls.url = "ws://" + cls.ws_host + "/websockify?token=" + cls.server.token
+        cls.cookie = nutcracker.SESSION_COOKIE + "=" + cls.server.auth.login("FixtureUser", "fixture-only-password")
         cls.http_thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         cls.http_thread.start()
 
@@ -576,6 +616,7 @@ class LiveConsoleTests(unittest.TestCase):
             "Connection": "Upgrade",
             "Sec-WebSocket-Version": "13",
             "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "Cookie": self.cookie,
         }
         headers.update(overrides)
         connection = http.client.HTTPConnection("127.0.0.1", self.bridge.port, timeout=3)
@@ -595,7 +636,7 @@ class LiveConsoleTests(unittest.TestCase):
         ])
 
     def test_complete_binary_rfb_handshake_and_keyboard_pointer_forwarding(self):
-        with self.connect(self.url, origin=self.origin, proxy=None, subprotocols=["binary"], open_timeout=2) as websocket:
+        with self.connect(self.url, origin=self.origin, proxy=None, subprotocols=["binary"], additional_headers={"Cookie": self.cookie}, open_timeout=2) as websocket:
             self.assertEqual(websocket.subprotocol, "binary")
             client = RFBClientBuffer(websocket)
             self.assertEqual(client.read(12), b"RFB 003.008\n")
@@ -641,7 +682,7 @@ class LiveConsoleTests(unittest.TestCase):
                 self.assertEqual(status, 404)
 
     def test_text_frames_are_rejected(self):
-        with self.connect(self.url, origin=self.origin, proxy=None, open_timeout=2) as websocket:
+        with self.connect(self.url, origin=self.origin, proxy=None, additional_headers={"Cookie": self.cookie}, open_timeout=2) as websocket:
             self.assertEqual(websocket.recv(timeout=2), b"RFB 003.008\n")
             websocket.send("text is not VNC")
             with self.assertRaises(self.connection_closed) as caught:
@@ -651,7 +692,7 @@ class LiveConsoleTests(unittest.TestCase):
     def test_console_api_requires_actual_rfb_greeting_and_signs_local_url(self):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
-            connection.request("GET", "/api/console")
+            connection.request("GET", "/api/console", headers={"Cookie": self.cookie})
             response = connection.getresponse()
             value = json.loads(response.read())
             self.assertEqual(response.status, 200)
@@ -710,6 +751,45 @@ class LiveConsoleTests(unittest.TestCase):
     def test_tokens_cannot_be_written_by_library_logging(self):
         self.assertFalse(self.bridge._logger.isEnabledFor(50))
         self.assertFalse(self.bridge._logger.propagate)
+
+    def test_ws_requires_live_authenticated_cookie_and_rejects_duplicates(self):
+        for cookie in ("", nutcracker.SESSION_COOKIE + "=" + "x" * 43,
+                       self.cookie + "; " + self.cookie):
+            with self.subTest(cookie_kind="missing, forged, or duplicate"):
+                status, body = self.handshake(Cookie=cookie)
+                self.assertEqual(status, 401)
+                self.assertNotIn(self.server.token.encode(), body)
+
+    def test_logout_closes_actual_websocket_and_denies_reconnect(self):
+        session = self.server.auth.login("FixtureUser", "fixture-only-password")
+        cookie = nutcracker.SESSION_COOKIE + "=" + session
+        with self.connect(self.url, origin=self.origin, proxy=None, additional_headers={"Cookie": cookie}, open_timeout=2) as websocket:
+            self.assertEqual(websocket.recv(timeout=2), b"RFB 003.008\n")
+            connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+            try:
+                connection.request("POST", "/api/logout", body="{}", headers={
+                    "Cookie": cookie, "Origin": self.origin, "Content-Type": "application/json",
+                    "X-Nutcracker-Token": self.server.token,
+                })
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertIn("Max-Age=0", response.getheader("Set-Cookie"))
+                response.read()
+            finally:
+                connection.close()
+            with self.assertRaises(self.connection_closed) as caught:
+                websocket.recv(timeout=2)
+            self.assertEqual(caught.exception.rcvd.code, 1008)
+        status, _ = self.handshake(Cookie=cookie)
+        self.assertEqual(status, 401)
+
+    def test_idle_websocket_closes_at_absolute_session_expiry(self):
+        with self.connect(self.url, origin=self.origin, proxy=None, additional_headers={"Cookie": self.cookie}, open_timeout=2) as websocket:
+            self.assertEqual(websocket.recv(timeout=2), b"RFB 003.008\n")
+            with patch.object(self.server.auth, "clock", return_value=self.server.auth.clock() + nutcracker.SESSION_SECONDS + 1):
+                with self.assertRaises(self.connection_closed) as caught:
+                    websocket.recv(timeout=2)
+                self.assertEqual(caught.exception.rcvd.code, 1008)
 
 
 if __name__ == "__main__":
